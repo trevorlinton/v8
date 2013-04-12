@@ -50,6 +50,7 @@ class LCodeGen;
   V(AccessArgumentsAt)                          \
   V(AddI)                                       \
   V(AllocateObject)                             \
+  V(Allocate)                                   \
   V(ApplyArguments)                             \
   V(ArgumentsElements)                          \
   V(ArgumentsLength)                            \
@@ -93,6 +94,7 @@ class LCodeGen;
   V(Deoptimize)                                 \
   V(DivI)                                       \
   V(DoubleToI)                                  \
+  V(DummyUse)                                   \
   V(ElementsKind)                               \
   V(FastLiteral)                                \
   V(FixedArrayBaseLength)                       \
@@ -106,6 +108,7 @@ class LCodeGen;
   V(In)                                         \
   V(InstanceOf)                                 \
   V(InstanceOfKnownGlobal)                      \
+  V(InstanceSize)                               \
   V(InstructionGap)                             \
   V(Integer32ToDouble)                          \
   V(Uint32ToDouble)                             \
@@ -137,6 +140,7 @@ class LCodeGen;
   V(ModI)                                       \
   V(MulI)                                       \
   V(MultiplyAddD)                               \
+  V(MultiplySubD)                               \
   V(NumberTagD)                                 \
   V(NumberTagI)                                 \
   V(NumberTagU)                                 \
@@ -174,6 +178,7 @@ class LCodeGen;
   V(Throw)                                      \
   V(ToFastProperties)                           \
   V(TransitionElementsKind)                     \
+  V(TrapAllocationMemento)                      \
   V(Typeof)                                     \
   V(TypeofIsAndBranch)                          \
   V(UnaryMathOperation)                         \
@@ -400,6 +405,15 @@ class LLazyBailout: public LTemplateInstruction<0, 0, 0> {
 
  private:
   int gap_instructions_size_;
+};
+
+
+class LDummyUse: public LTemplateInstruction<1, 1, 0> {
+ public:
+  explicit LDummyUse(LOperand* value) {
+    inputs_[0] = value;
+  }
+  DECLARE_CONCRETE_INSTRUCTION(DummyUse, "dummy-use")
 };
 
 
@@ -645,6 +659,24 @@ class LMultiplyAddD: public LTemplateInstruction<1, 3, 0> {
   LOperand* multiplicand() { return inputs_[2]; }
 
   DECLARE_CONCRETE_INSTRUCTION(MultiplyAddD, "multiply-add-d")
+};
+
+
+// Instruction for computing minuend - multiplier * multiplicand.
+class LMultiplySubD: public LTemplateInstruction<1, 3, 0> {
+ public:
+  LMultiplySubD(LOperand* minuend, LOperand* multiplier,
+                LOperand* multiplicand) {
+    inputs_[0] = minuend;
+    inputs_[1] = multiplier;
+    inputs_[2] = multiplicand;
+  }
+
+  LOperand* minuend() { return inputs_[0]; }
+  LOperand* multiplier() { return inputs_[1]; }
+  LOperand* multiplicand() { return inputs_[2]; }
+
+  DECLARE_CONCRETE_INSTRUCTION(MultiplySubD, "multiply-sub-d")
 };
 
 
@@ -965,6 +997,19 @@ class LInstanceOfKnownGlobal: public LTemplateInstruction<1, 1, 1> {
 
  private:
   LEnvironment* lazy_deopt_env_;
+};
+
+
+class LInstanceSize: public LTemplateInstruction<1, 1, 0> {
+ public:
+  explicit LInstanceSize(LOperand* object) {
+    inputs_[0] = object;
+  }
+
+  LOperand* object() { return inputs_[0]; }
+
+  DECLARE_CONCRETE_INSTRUCTION(InstanceSize, "instance-size")
+  DECLARE_HYDROGEN_ACCESSOR(InstanceSize)
 };
 
 
@@ -1609,6 +1654,7 @@ class LThisFunction: public LTemplateInstruction<1, 0, 0> {
 class LContext: public LTemplateInstruction<1, 0, 0> {
  public:
   DECLARE_CONCRETE_INSTRUCTION(Context, "context")
+  DECLARE_HYDROGEN_ACCESSOR(Context)
 };
 
 
@@ -1842,6 +1888,7 @@ class LNumberTagD: public LTemplateInstruction<1, 1, 2> {
   LOperand* temp2() { return temps_[1]; }
 
   DECLARE_CONCRETE_INSTRUCTION(NumberTagD, "number-tag-d")
+  DECLARE_HYDROGEN_ACCESSOR(Change)
 };
 
 
@@ -2026,10 +2073,10 @@ class LTransitionElementsKind: public LTemplateInstruction<1, 1, 2> {
  public:
   LTransitionElementsKind(LOperand* object,
                           LOperand* new_map_temp,
-                          LOperand* temp) {
+                          LOperand* fixed_object_temp) {
     inputs_[0] = object;
     temps_[0] = new_map_temp;
-    temps_[1] = temp;
+    temps_[1] = fixed_object_temp;
   }
 
   LOperand* object() { return inputs_[0]; }
@@ -2044,6 +2091,24 @@ class LTransitionElementsKind: public LTemplateInstruction<1, 1, 2> {
 
   Handle<Map> original_map() { return hydrogen()->original_map(); }
   Handle<Map> transitioned_map() { return hydrogen()->transitioned_map(); }
+  ElementsKind from_kind() { return hydrogen()->from_kind(); }
+  ElementsKind to_kind() { return hydrogen()->to_kind(); }
+};
+
+
+class LTrapAllocationMemento : public LTemplateInstruction<0, 1, 1> {
+ public:
+  LTrapAllocationMemento(LOperand* object,
+                         LOperand* temp) {
+    inputs_[0] = object;
+    temps_[0] = temp;
+  }
+
+  LOperand* object() { return inputs_[0]; }
+  LOperand* temp() { return temps_[0]; }
+
+  DECLARE_CONCRETE_INSTRUCTION(TrapAllocationMemento,
+                               "trap-allocation-memento")
 };
 
 
@@ -2156,8 +2221,10 @@ class LCheckPrototypeMaps: public LTemplateInstruction<1, 0, 2> {
   DECLARE_CONCRETE_INSTRUCTION(CheckPrototypeMaps, "check-prototype-maps")
   DECLARE_HYDROGEN_ACCESSOR(CheckPrototypeMaps)
 
-  Handle<JSObject> prototype() const { return hydrogen()->prototype(); }
-  Handle<JSObject> holder() const { return hydrogen()->holder(); }
+  ZoneList<Handle<JSObject> >* prototypes() const {
+    return hydrogen()->prototypes();
+  }
+  ZoneList<Handle<Map> >* maps() const { return hydrogen()->maps(); }
 };
 
 
@@ -2225,7 +2292,7 @@ class LClampTToUint8: public LTemplateInstruction<1, 1, 1> {
 };
 
 
-class LAllocateObject: public LTemplateInstruction<1, 0, 2> {
+class LAllocateObject: public LTemplateInstruction<1, 1, 2> {
  public:
   LAllocateObject(LOperand* temp, LOperand* temp2) {
     temps_[0] = temp;
@@ -2237,6 +2304,23 @@ class LAllocateObject: public LTemplateInstruction<1, 0, 2> {
 
   DECLARE_CONCRETE_INSTRUCTION(AllocateObject, "allocate-object")
   DECLARE_HYDROGEN_ACCESSOR(AllocateObject)
+};
+
+
+class LAllocate: public LTemplateInstruction<1, 2, 2> {
+ public:
+  LAllocate(LOperand* size, LOperand* temp1, LOperand* temp2) {
+    inputs_[1] = size;
+    temps_[0] = temp1;
+    temps_[1] = temp2;
+  }
+
+  LOperand* size() { return inputs_[1]; }
+  LOperand* temp1() { return temps_[0]; }
+  LOperand* temp2() { return temps_[1]; }
+
+  DECLARE_CONCRETE_INSTRUCTION(Allocate, "allocate")
+  DECLARE_HYDROGEN_ACCESSOR(Allocate)
 };
 
 
@@ -2489,6 +2573,7 @@ class LChunkBuilder BASE_EMBEDDED {
 #undef DECLARE_DO
 
   LInstruction* DoMultiplyAdd(HMul* mul, HValue* addend);
+  LInstruction* DoMultiplySub(HValue* minuend, HMul* mul);
   LInstruction* DoRSub(HSub* instr);
 
   static bool HasMagicNumberForDivisor(int32_t divisor);

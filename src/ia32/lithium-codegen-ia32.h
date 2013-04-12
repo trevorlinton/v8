@@ -57,12 +57,14 @@ class LCodeGen BASE_EMBEDDED {
         deoptimizations_(4, info->zone()),
         jump_table_(4, info->zone()),
         deoptimization_literals_(8, info->zone()),
+        prototype_maps_(0, info->zone()),
         inlined_function_count_(0),
         scope_(info->scope()),
         status_(UNUSED),
         translations_(info->zone()),
         deferred_(8, info->zone()),
         dynamic_frame_alignment_(false),
+        support_aligned_spilled_doubles_(false),
         osr_pc_offset_(-1),
         last_lazy_deopt_pc_(0),
         frame_is_built_(false),
@@ -133,6 +135,7 @@ class LCodeGen BASE_EMBEDDED {
   void DoDeferredStringCharCodeAt(LStringCharCodeAt* instr);
   void DoDeferredStringCharFromCode(LStringCharFromCode* instr);
   void DoDeferredAllocateObject(LAllocateObject* instr);
+  void DoDeferredAllocate(LAllocate* instr);
   void DoDeferredInstanceOfKnownGlobal(LInstanceOfKnownGlobal* instr,
                                        Label* map_check);
 
@@ -232,6 +235,8 @@ class LCodeGen BASE_EMBEDDED {
                                LInstruction* instr,
                                LOperand* context);
 
+  void LoadContextFromDeferred(LOperand* context);
+
   enum EDIState {
     EDI_UNINITIALIZED,
     EDI_CONTAINS_TARGET
@@ -256,8 +261,10 @@ class LCodeGen BASE_EMBEDDED {
                         LOperand* op,
                         bool is_tagged,
                         bool is_uint32,
+                        bool arguments_known,
                         int arguments_index,
                         int arguments_count);
+  void RegisterDependentCodeForEmbeddedMaps(Handle<Code> code);
   void PopulateDeoptimizationData(Handle<Code> code);
   int DefineDeoptimizationLiteral(Handle<Object> literal);
 
@@ -301,16 +308,14 @@ class LCodeGen BASE_EMBEDDED {
   static Condition TokenToCondition(Token::Value op, bool is_unsigned);
   void EmitGoto(int block);
   void EmitBranch(int left_block, int right_block, Condition cc);
-  void EmitNumberUntagD(Register input,
-                        Register temp,
-                        XMMRegister result,
-                        bool deoptimize_on_undefined,
-                        bool deoptimize_on_minus_zero,
-                        LEnvironment* env);
-
-  void DeoptIfTaggedButNotSmi(LEnvironment* environment,
-                              HValue* value,
-                              LOperand* operand);
+  void EmitNumberUntagD(
+      Register input,
+      Register temp,
+      XMMRegister result,
+      bool deoptimize_on_undefined,
+      bool deoptimize_on_minus_zero,
+      LEnvironment* env,
+      NumberUntagDMode mode = NUMBER_CANDIDATE_IS_ANY_TAGGED);
 
   // Emits optimized code for typeof x == "y".  Modifies input register.
   // Returns the condition on which a final split to
@@ -350,7 +355,8 @@ class LCodeGen BASE_EMBEDDED {
   void EmitDeepCopy(Handle<JSObject> object,
                     Register result,
                     Register source,
-                    int* offset);
+                    int* offset,
+                    AllocationSiteMode mode);
 
   void EnsureSpaceForLazyDeopt();
   void DoLoadKeyedExternalArray(LLoadKeyed* instr);
@@ -387,12 +393,14 @@ class LCodeGen BASE_EMBEDDED {
   ZoneList<LEnvironment*> deoptimizations_;
   ZoneList<JumpTableEntry> jump_table_;
   ZoneList<Handle<Object> > deoptimization_literals_;
+  ZoneList<Handle<Map> > prototype_maps_;
   int inlined_function_count_;
   Scope* const scope_;
   Status status_;
   TranslationBuffer translations_;
   ZoneList<LDeferredCode*> deferred_;
   bool dynamic_frame_alignment_;
+  bool support_aligned_spilled_doubles_;
   int osr_pc_offset_;
   int last_lazy_deopt_pc_;
   bool frame_is_built_;

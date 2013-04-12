@@ -71,6 +71,7 @@ class HeapProfiler;
 class InlineRuntimeFunctionsTable;
 class NoAllocationStringAllocator;
 class InnerPointerToCodeCache;
+class MarkingThread;
 class PreallocatedMemoryThread;
 class RegExpStack;
 class SaveContext;
@@ -78,6 +79,7 @@ class UnicodeCache;
 class ConsStringIteratorOp;
 class StringTracker;
 class StubCache;
+class SweeperThread;
 class ThreadManager;
 class ThreadState;
 class ThreadVisitor;  // Defined in v8threads.h
@@ -285,6 +287,20 @@ class ThreadLocalTop BASE_EMBEDDED {
 };
 
 
+class SystemThreadManager {
+ public:
+  enum ParallelSystemComponent {
+    PARALLEL_SWEEPING,
+    CONCURRENT_SWEEPING,
+    PARALLEL_MARKING
+  };
+
+  static int NumberOfParallelSystemThreads(ParallelSystemComponent type);
+
+  static const int kMaxThreads = 4;
+};
+
+
 #ifdef ENABLE_DEBUGGER_SUPPORT
 
 #define ISOLATE_DEBUGGER_INIT_LIST(V)                                          \
@@ -468,6 +484,8 @@ class Isolate {
   // for legacy API reasons.
   void TearDown();
 
+  static void GlobalTearDown();
+
   bool IsDefaultIsolate() const { return this == default_isolate_; }
 
   // Ensures that process-wide resources and the default isolate have been
@@ -529,11 +547,6 @@ class Isolate {
   SaveContext* save_context() {return thread_local_top_.save_context_; }
   void set_save_context(SaveContext* save) {
     thread_local_top_.save_context_ = save;
-  }
-
-  // Access to the map of "new Object()".
-  Map* empty_object_map() {
-    return context()->native_context()->object_function()->map();
   }
 
   // Access to current thread id.
@@ -615,7 +628,7 @@ class Isolate {
   bool IsExternallyCaught();
 
   bool is_catchable_by_javascript(MaybeObject* exception) {
-    return (exception != Failure::OutOfMemoryException()) &&
+    return (!exception->IsOutOfMemory()) &&
         (exception != heap()->termination_exception());
   }
 
@@ -674,7 +687,8 @@ class Isolate {
       // Scope currently can only be used for regular exceptions, not
       // failures like OOM or termination exception.
       isolate_(isolate),
-      pending_exception_(isolate_->pending_exception()->ToObjectUnchecked()),
+      pending_exception_(isolate_->pending_exception()->ToObjectUnchecked(),
+                         isolate_),
       catcher_(isolate_->catcher())
     { }
 
@@ -814,9 +828,9 @@ class Isolate {
   ISOLATE_INIT_ARRAY_LIST(GLOBAL_ARRAY_ACCESSOR)
 #undef GLOBAL_ARRAY_ACCESSOR
 
-#define NATIVE_CONTEXT_FIELD_ACCESSOR(index, type, name)      \
-  Handle<type> name() {                                       \
-    return Handle<type>(context()->native_context()->name()); \
+#define NATIVE_CONTEXT_FIELD_ACCESSOR(index, type, name)            \
+  Handle<type> name() {                                             \
+    return Handle<type>(context()->native_context()->name(), this); \
   }
   NATIVE_CONTEXT_FIELDS(NATIVE_CONTEXT_FIELD_ACCESSOR)
 #undef NATIVE_CONTEXT_FIELD_ACCESSOR
@@ -969,6 +983,9 @@ class Isolate {
   }
 
   int* code_kind_statistics() { return code_kind_statistics_; }
+
+  bool allow_handle_deref() { return allow_handle_deref_; }
+  void set_allow_handle_deref(bool allow) { allow_handle_deref_ = allow; }
 #endif
 
 #if defined(V8_TARGET_ARCH_ARM) && !defined(__arm__) || \
@@ -1070,6 +1087,19 @@ class Isolate {
     return &optimizing_compiler_thread_;
   }
 
+  // PreInits and returns a default isolate. Needed when a new thread tries
+  // to create a Locker for the first time (the lock itself is in the isolate).
+  // TODO(svenpanne) This method is on death row...
+  static v8::Isolate* GetDefaultIsolateForLocking();
+
+  MarkingThread** marking_threads() {
+    return marking_thread_;
+  }
+
+  SweeperThread** sweeper_threads() {
+    return sweeper_thread_;
+  }
+
  private:
   Isolate();
 
@@ -1152,10 +1182,6 @@ class Isolate {
   // Find the PerThread for this particular (isolate, thread) combination.
   // If one does not yet exist, allocate a new one.
   PerIsolateThreadData* FindOrAllocatePerThreadDataForThisThread();
-
-  // PreInits and returns a default isolate. Needed when a new thread tries
-  // to create a Locker for the first time (the lock itself is in the isolate).
-  static Isolate* GetDefaultIsolateForLocking();
 
   // Initializes the current thread to run this Isolate.
   // Not thread-safe. Multiple threads should not Enter/Exit the same isolate
@@ -1265,6 +1291,8 @@ class Isolate {
   HistogramInfo heap_histograms_[LAST_TYPE + 1];
   JSObject::SpillInformation js_spill_information_;
   int code_kind_statistics_[Code::NUMBER_OF_KINDS];
+
+  bool allow_handle_deref_;
 #endif
 
 #ifdef ENABLE_DEBUGGER_SUPPORT
@@ -1295,16 +1323,21 @@ class Isolate {
 
   DeferredHandles* deferred_handles_head_;
   OptimizingCompilerThread optimizing_compiler_thread_;
+  MarkingThread** marking_thread_;
+  SweeperThread** sweeper_thread_;
 
   friend class ExecutionAccess;
   friend class HandleScopeImplementer;
   friend class IsolateInitializer;
+  friend class MarkingThread;
   friend class OptimizingCompilerThread;
+  friend class SweeperThread;
   friend class ThreadManager;
   friend class Simulator;
   friend class StackGuard;
   friend class ThreadId;
   friend class TestMemoryAllocatorScope;
+  friend class TestCodeRangeScope;
   friend class v8::Isolate;
   friend class v8::Locker;
   friend class v8::Unlocker;

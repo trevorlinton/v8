@@ -91,6 +91,8 @@ class HBasicBlock: public ZoneObject {
   void set_last_instruction_index(int index) {
     last_instruction_index_ = index;
   }
+  bool is_osr_entry() { return is_osr_entry_; }
+  void set_osr_entry() { is_osr_entry_ = true; }
 
   void AttachLoopInformation();
   void DetachLoopInformation();
@@ -193,6 +195,7 @@ class HBasicBlock: public ZoneObject {
   bool is_inline_return_target_;
   bool is_deoptimizing_;
   bool dominates_loop_successors_;
+  bool is_osr_entry_;
 };
 
 
@@ -247,7 +250,7 @@ class HGraph: public ZoneObject {
  public:
   explicit HGraph(CompilationInfo* info);
 
-  Isolate* isolate() { return isolate_; }
+  Isolate* isolate() const { return isolate_; }
   Zone* zone() const { return zone_; }
   CompilationInfo* info() const { return info_; }
 
@@ -263,16 +266,18 @@ class HGraph: public ZoneObject {
   void MarkDeoptimizeOnUndefined();
   void ComputeMinusZeroChecks();
   void ComputeSafeUint32Operations();
+  void GlobalValueNumbering();
   bool ProcessArgumentsObject();
   void EliminateRedundantPhis();
   void EliminateUnreachablePhis();
   void Canonicalize();
   void OrderBlocks();
   void AssignDominators();
-  void ReplaceCheckedValues();
+  void SetupInformativeDefinitions();
   void EliminateRedundantBoundsChecks();
   void DehoistSimpleArrayIndexComputations();
   void DeadCodeElimination();
+  void RestoreActualValues();
   void PropagateDeoptimizingMark();
   void EliminateUnusedInstructions();
 
@@ -290,6 +295,7 @@ class HGraph: public ZoneObject {
     undefined_constant_.set(constant);
   }
   HConstant* GetConstantUndefined() const { return undefined_constant_.get(); }
+  HConstant* GetConstant0();
   HConstant* GetConstant1();
   HConstant* GetConstantMinus1();
   HConstant* GetConstantTrue();
@@ -355,6 +361,14 @@ class HGraph: public ZoneObject {
     use_optimistic_licm_ = value;
   }
 
+  bool has_soft_deoptimize() {
+    return has_soft_deoptimize_;
+  }
+
+  void set_has_soft_deoptimize(bool value) {
+    has_soft_deoptimize_ = value;
+  }
+
   void MarkRecursive() {
     is_recursive_ = true;
   }
@@ -377,6 +391,7 @@ class HGraph: public ZoneObject {
                               int32_t integer_value);
 
   void MarkAsDeoptimizingRecursively(HBasicBlock* block);
+  void NullifyUnreachableInstructions();
   void InsertTypeConversions(HInstruction* instr);
   void PropagateMinusZeroChecks(HValue* value, BitVector* visited);
   void RecursivelyMarkPhiDeoptimizeOnUndefined(HPhi* phi);
@@ -388,6 +403,8 @@ class HGraph: public ZoneObject {
   void InferTypes(ZoneList<HValue*>* worklist);
   void InitializeInferredTypes(int from_inclusive, int to_inclusive);
   void CheckForBackEdge(HBasicBlock* block, HBasicBlock* successor);
+  void SetupInformativeDefinitionsInBlock(HBasicBlock* block);
+  void SetupInformativeDefinitionsRecursively(HBasicBlock* block);
   void EliminateRedundantBoundsChecks(HBasicBlock* bb, BoundsCheckTable* table);
 
   Isolate* isolate_;
@@ -399,6 +416,7 @@ class HGraph: public ZoneObject {
   ZoneList<HPhi*>* phi_list_;
   ZoneList<HInstruction*>* uint32_instructions_;
   SetOncePointer<HConstant> undefined_constant_;
+  SetOncePointer<HConstant> constant_0_;
   SetOncePointer<HConstant> constant_1_;
   SetOncePointer<HConstant> constant_minus1_;
   SetOncePointer<HConstant> constant_true_;
@@ -414,6 +432,7 @@ class HGraph: public ZoneObject {
 
   bool is_recursive_;
   bool use_optimistic_licm_;
+  bool has_soft_deoptimize_;
   int type_change_checksum_;
 
   DISALLOW_COPY_AND_ASSIGN(HGraph);
@@ -441,7 +460,7 @@ class HEnvironment: public ZoneObject {
                Handle<JSFunction> closure,
                Zone* zone);
 
-  explicit HEnvironment(Zone* zone);
+  HEnvironment(Zone* zone, int parameter_count);
 
   HEnvironment* arguments_environment() {
     return outer()->frame_type() == ARGUMENTS_ADAPTOR ? outer() : this;
@@ -450,7 +469,7 @@ class HEnvironment: public ZoneObject {
   // Simple accessors.
   Handle<JSFunction> closure() const { return closure_; }
   const ZoneList<HValue*>* values() const { return &values_; }
-  const ZoneList<int>* assigned_variables() const {
+  const GrowableBitVector* assigned_variables() const {
     return &assigned_variables_;
   }
   FrameType frame_type() const { return frame_type_; }
@@ -542,8 +561,16 @@ class HEnvironment: public ZoneObject {
                                 int arguments,
                                 FunctionLiteral* function,
                                 HConstant* undefined,
-                                CallKind call_kind,
-                                InliningKind inlining_kind) const;
+                                InliningKind inlining_kind,
+                                bool undefined_receiver) const;
+
+  static bool UseUndefinedReceiver(Handle<JSFunction> closure,
+                                   FunctionLiteral* function,
+                                   CallKind call_kind,
+                                   InliningKind inlining_kind) {
+    return (closure->shared()->native() || !function->is_classic_mode()) &&
+        call_kind == CALL_AS_FUNCTION && inlining_kind != CONSTRUCT_CALL_RETURN;
+  }
 
   HEnvironment* DiscardInlined(bool drop_extra) {
     HEnvironment* outer = outer_;
@@ -557,7 +584,7 @@ class HEnvironment: public ZoneObject {
   void ClearHistory() {
     pop_count_ = 0;
     push_count_ = 0;
-    assigned_variables_.Rewind(0);
+    assigned_variables_.Clear();
   }
 
   void SetValueAt(int index, HValue* value) {
@@ -606,7 +633,7 @@ class HEnvironment: public ZoneObject {
   Handle<JSFunction> closure_;
   // Value array [parameters] [specials] [locals] [temporaries].
   ZoneList<HValue*> values_;
-  ZoneList<int> assigned_variables_;
+  GrowableBitVector assigned_variables_;
   FrameType frame_type_;
   int parameter_count_;
   int specials_count_;
@@ -851,9 +878,17 @@ class HGraphBuilder {
   HInstruction* AddInstruction(HInstruction* instr);
   void AddSimulate(BailoutId id,
                    RemovableSimulate removable = FIXED_SIMULATE);
+  HBoundsCheck* AddBoundsCheck(
+      HValue* index,
+      HValue* length,
+      BoundsCheckKeyMode key_mode = DONT_ALLOW_SMI_KEY,
+      Representation r = Representation::None());
 
  protected:
   virtual bool BuildGraph() = 0;
+
+  HBasicBlock* CreateBasicBlock(HEnvironment* env);
+  HBasicBlock* CreateLoopHeaderBlock();
 
   // Building common constructs
   HInstruction* BuildExternalArrayElementAccess(
@@ -879,7 +914,109 @@ class HGraphBuilder {
       HCheckMaps* mapcheck,
       bool is_js_array,
       ElementsKind elements_kind,
-      bool is_store);
+      bool is_store,
+      Representation checked_index_representation = Representation::None());
+
+  HInstruction* BuildStoreMap(HValue* object, HValue* map, BailoutId id);
+  HInstruction* BuildStoreMap(HValue* object, Handle<Map> map, BailoutId id);
+
+  class CheckBuilder {
+   public:
+    CheckBuilder(HGraphBuilder* builder, BailoutId id);
+    ~CheckBuilder() {
+      if (!finished_) End();
+    }
+
+    void CheckNotUndefined(HValue* value);
+    void CheckIntegerEq(HValue* left, HValue* right);
+    void End();
+
+   private:
+    Zone* zone() { return builder_->zone(); }
+
+    HGraphBuilder* builder_;
+    bool finished_;
+    HBasicBlock* failure_block_;
+    HBasicBlock* merge_block_;
+    BailoutId id_;
+  };
+
+  class IfBuilder {
+   public:
+    IfBuilder(HGraphBuilder* builder, BailoutId id);
+    ~IfBuilder() {
+      if (!finished_) End();
+    }
+
+    HInstruction* BeginTrue(
+        HValue* left,
+        HValue* right,
+        Token::Value token,
+        Representation input_representation = Representation::Integer32());
+    void BeginFalse();
+    void End();
+
+   private:
+    Zone* zone() { return builder_->zone(); }
+
+    HGraphBuilder* builder_;
+    bool finished_;
+    HBasicBlock* first_true_block_;
+    HBasicBlock* last_true_block_;
+    HBasicBlock* first_false_block_;
+    HBasicBlock* merge_block_;
+    BailoutId id_;
+  };
+
+  class LoopBuilder {
+   public:
+    enum Direction {
+      kPreIncrement,
+      kPostIncrement,
+      kPreDecrement,
+      kPostDecrement
+    };
+
+    LoopBuilder(HGraphBuilder* builder,
+                HValue* context,
+                Direction direction,
+                BailoutId id);
+    ~LoopBuilder() {
+      ASSERT(finished_);
+    }
+
+    HValue* BeginBody(
+        HValue* initial,
+        HValue* terminating,
+        Token::Value token,
+        Representation input_representation = Representation::Integer32());
+    void EndBody();
+
+   private:
+    Zone* zone() { return builder_->zone(); }
+
+    HGraphBuilder* builder_;
+    HValue* context_;
+    HInstruction* increment_;
+    HPhi* phi_;
+    HBasicBlock* header_block_;
+    HBasicBlock* body_block_;
+    HBasicBlock* exit_block_;
+    Direction direction_;
+    BailoutId id_;
+    bool finished_;
+  };
+
+  HValue* BuildAllocateElements(HContext* context,
+                                ElementsKind kind,
+                                HValue* capacity);
+
+  void BuildCopyElements(HContext* context,
+                         HValue* from_elements,
+                         ElementsKind from_elements_kind,
+                         HValue* to_elements,
+                         ElementsKind to_elements_kind,
+                         HValue* length);
 
  private:
   HGraphBuilder();
@@ -955,6 +1092,8 @@ class HOptimizedGraphBuilder: public HGraphBuilder, public AstVisitor {
   void set_break_scope(BreakAndContinueScope* head) { break_scope_ = head; }
 
   bool inline_bailout() { return inline_bailout_; }
+
+  void AddSoftDeoptimize();
 
   // Bailout environment manipulation.
   void Push(HValue* value) { environment()->Push(value); }
@@ -1111,9 +1250,6 @@ class HOptimizedGraphBuilder: public HGraphBuilder, public AstVisitor {
   AST_NODE_LIST(DECLARE_VISIT)
 #undef DECLARE_VISIT
 
-  HBasicBlock* CreateBasicBlock(HEnvironment* env);
-  HBasicBlock* CreateLoopHeaderBlock();
-
   // Helpers for flow graph construction.
   enum GlobalPropertyAccess {
     kUseCell,
@@ -1144,6 +1280,9 @@ class HOptimizedGraphBuilder: public HGraphBuilder, public AstVisitor {
   bool TryInlineSetter(Handle<JSFunction> setter,
                        Assignment* assignment,
                        HValue* implicit_return_value);
+  bool TryInlineApply(Handle<JSFunction> function,
+                      Call* expr,
+                      int arguments_count);
   bool TryInlineBuiltinMethodCall(Call* expr,
                                   HValue* receiver,
                                   Handle<Map> receiver_map,
@@ -1184,9 +1323,9 @@ class HOptimizedGraphBuilder: public HGraphBuilder, public AstVisitor {
                                HValue* value,
                                NilValue nil);
 
-  HStringCharCodeAt* BuildStringCharCodeAt(HValue* context,
-                                           HValue* string,
-                                           HValue* index);
+  HInstruction* BuildStringCharCodeAt(HValue* context,
+                                      HValue* string,
+                                      HValue* index);
   HInstruction* BuildBinaryOperation(BinaryOperation* expr,
                                      HValue* left,
                                      HValue* right);

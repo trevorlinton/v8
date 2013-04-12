@@ -101,6 +101,7 @@ void CompilationInfo::Initialize(Isolate* isolate, Mode mode, Zone* zone) {
   deferred_handles_ = NULL;
   code_stub_ = NULL;
   prologue_offset_ = kPrologueOffsetNotSet;
+  opt_count_ = shared_info().is_null() ? 0 : shared_info()->opt_count();
   if (mode == STUB) {
     mode_ = STUB;
     return;
@@ -285,7 +286,7 @@ OptimizingCompiler::Status OptimizingCompiler::CreateGraph() {
   // the optimizing compiler.
   const int kMaxOptCount =
       FLAG_deopt_every_n_times == 0 ? FLAG_max_opt_count : 1000;
-  if (info()->shared_info()->opt_count() > kMaxOptCount) {
+  if (info()->opt_count() > kMaxOptCount) {
     info()->set_bailout_reason("optimized too many times");
     return AbortOptimization();
   }
@@ -316,8 +317,8 @@ OptimizingCompiler::Status OptimizingCompiler::CreateGraph() {
   if (*FLAG_hydrogen_filter != '\0') {
     Vector<const char> filter = CStrVector(FLAG_hydrogen_filter);
     if ((filter[0] == '-'
-         && name->IsEqualTo(filter.SubVector(1, filter.length())))
-        || (filter[0] != '-' && !name->IsEqualTo(filter))) {
+         && name->IsUtf8EqualTo(filter.SubVector(1, filter.length())))
+        || (filter[0] != '-' && !name->IsUtf8EqualTo(filter))) {
       info()->SetCode(code);
       return SetLastStatus(BAILED_OUT);
     }
@@ -393,7 +394,8 @@ OptimizingCompiler::Status OptimizingCompiler::CreateGraph() {
 
 OptimizingCompiler::Status OptimizingCompiler::OptimizeGraph() {
   AssertNoAllocation no_gc;
-  NoHandleAllocation no_handles;
+  NoHandleAllocation no_handles(isolate());
+  NoHandleDereference no_deref(isolate());
 
   ASSERT(last_status() == SUCCEEDED);
   Timer t(this, &time_taken_to_optimize_);
@@ -474,6 +476,13 @@ bool Compiler::MakeCodeForLiveEdit(CompilationInfo* info) {
 #endif
 
 
+static bool DebuggerWantsEagerCompilation(CompilationInfo* info,
+                                          bool allow_lazy_without_ctx = false) {
+  return LiveEditFunctionTracker::IsActive(info->isolate()) ||
+         (info->isolate()->DebuggerHasBreakPoints() && !allow_lazy_without_ctx);
+}
+
+
 static Handle<SharedFunctionInfo> MakeFunctionInfo(CompilationInfo* info) {
   Isolate* isolate = info->isolate();
   ZoneScope zone_scope(info->zone(), DELETE_ON_EXIT);
@@ -511,9 +520,10 @@ static Handle<SharedFunctionInfo> MakeFunctionInfo(CompilationInfo* info) {
   // Only allow non-global compiles for eval.
   ASSERT(info->is_eval() || info->is_global());
   ParsingFlags flags = kNoParsingFlags;
-  if (info->pre_parse_data() != NULL ||
-      String::cast(script->source())->length() > FLAG_min_preparse_length &&
-      script->allows_lazy_compilation()) {
+  if ((info->pre_parse_data() != NULL ||
+       String::cast(script->source())->length() > FLAG_min_preparse_length &&
+       script->allows_lazy_compilation()) &&
+      !DebuggerWantsEagerCompilation(info)) {
     flags = kAllowLazy;
   }
   if (!ParserApi::Parse(info, flags)) {
@@ -746,7 +756,7 @@ static bool InstallFullCode(CompilationInfo* info) {
   Handle<ScopeInfo> scope_info =
       ScopeInfo::Create(info->scope(), info->zone());
   shared->set_scope_info(*scope_info);
-  shared->set_code(*code);
+  shared->ReplaceCode(*code);
   if (!function.is_null()) {
     function->ReplaceCode(*code);
     ASSERT(!function->IsOptimized());
@@ -879,7 +889,7 @@ bool Compiler::CompileLazy(CompilationInfo* info) {
 
       if (info->IsOptimizing()) {
         Handle<Code> code = info->code();
-        ASSERT(shared->scope_info() != ScopeInfo::Empty());
+        ASSERT(shared->scope_info() != ScopeInfo::Empty(isolate));
         info->closure()->ReplaceCode(*code);
         InsertCodeIntoOptimizedCodeMap(info);
         return true;
@@ -980,7 +990,7 @@ void Compiler::InstallOptimizedCode(OptimizingCompiler* optimizing_compiler) {
   InstallCodeCommon(*info);
   if (status == OptimizingCompiler::SUCCEEDED) {
     Handle<Code> code = info->code();
-    ASSERT(info->shared_info()->scope_info() != ScopeInfo::Empty());
+    ASSERT(info->shared_info()->scope_info() != ScopeInfo::Empty(isolate));
     info->closure()->ReplaceCode(*code);
     if (info->shared_info()->SearchOptimizedCodeMap(
             info->closure()->context()->native_context()) == -1) {
@@ -1001,7 +1011,8 @@ Handle<SharedFunctionInfo> Compiler::BuildFunctionInfo(FunctionLiteral* literal,
   info.SetScope(literal->scope());
   info.SetLanguageMode(literal->scope()->language_mode());
 
-  LiveEditFunctionTracker live_edit_tracker(info.isolate(), literal);
+  Isolate* isolate = info.isolate();
+  LiveEditFunctionTracker live_edit_tracker(isolate, literal);
   // Determine if the function can be lazily compiled. This is necessary to
   // allow some of our builtin JS files to be lazily compiled. These
   // builtins cannot be handled lazily by the parser, since we have to know
@@ -1014,14 +1025,13 @@ Handle<SharedFunctionInfo> Compiler::BuildFunctionInfo(FunctionLiteral* literal,
   bool allow_lazy_without_ctx = literal->AllowsLazyCompilationWithoutContext();
   bool allow_lazy = script->allows_lazy_compilation() &&
       literal->AllowsLazyCompilation() &&
-      !LiveEditFunctionTracker::IsActive(info.isolate()) &&
-      (!info.isolate()->DebuggerHasBreakPoints() || allow_lazy_without_ctx);
+      !DebuggerWantsEagerCompilation(&info, allow_lazy_without_ctx);
 
-  Handle<ScopeInfo> scope_info(ScopeInfo::Empty());
+  Handle<ScopeInfo> scope_info(ScopeInfo::Empty(isolate));
 
   // Generate code
   if (FLAG_lazy && allow_lazy && !literal->is_parenthesized()) {
-    Handle<Code> code = info.isolate()->builtins()->LazyCompile();
+    Handle<Code> code = isolate->builtins()->LazyCompile();
     info.SetCode(code);
   } else if (GenerateCode(&info)) {
     ASSERT(!info.code().is_null());

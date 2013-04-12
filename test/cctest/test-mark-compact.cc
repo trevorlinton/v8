@@ -53,6 +53,7 @@ static void InitializeVM() {
 
 
 TEST(MarkingDeque) {
+  InitializeVM();
   int mem_size = 20 * kPointerSize;
   byte* mem = NewArray<byte>(20*kPointerSize);
   Address low = reinterpret_cast<Address>(mem);
@@ -60,19 +61,20 @@ TEST(MarkingDeque) {
   MarkingDeque s;
   s.Initialize(low, high);
 
-  Address address = NULL;
+  Address original_address = reinterpret_cast<Address>(&s);
+  Address current_address = original_address;
   while (!s.IsFull()) {
-    s.PushBlack(HeapObject::FromAddress(address));
-    address += kPointerSize;
+    s.PushBlack(HeapObject::FromAddress(current_address));
+    current_address += kPointerSize;
   }
 
   while (!s.IsEmpty()) {
     Address value = s.Pop()->address();
-    address -= kPointerSize;
-    CHECK_EQ(address, value);
+    current_address -= kPointerSize;
+    CHECK_EQ(current_address, value);
   }
 
-  CHECK_EQ(NULL, address);
+  CHECK_EQ(original_address, current_address);
   DeleteArray(mem);
 }
 
@@ -304,10 +306,12 @@ TEST(GCCallback) {
 
 
 static int NumberOfWeakCalls = 0;
-static void WeakPointerCallback(v8::Persistent<v8::Value> handle, void* id) {
+static void WeakPointerCallback(v8::Isolate* isolate,
+                                v8::Persistent<v8::Value> handle,
+                                void* id) {
   ASSERT(id == reinterpret_cast<void*>(1234));
   NumberOfWeakCalls++;
-  handle.Dispose();
+  handle.Dispose(isolate);
 }
 
 TEST(ObjectGroups) {
@@ -326,12 +330,15 @@ TEST(ObjectGroups) {
       global_handles->Create(HEAP->AllocateFixedArray(1)->ToObjectChecked());
   global_handles->MakeWeak(g1s1.location(),
                            reinterpret_cast<void*>(1234),
+                           NULL,
                            &WeakPointerCallback);
   global_handles->MakeWeak(g1s2.location(),
                            reinterpret_cast<void*>(1234),
+                           NULL,
                            &WeakPointerCallback);
   global_handles->MakeWeak(g1c1.location(),
                            reinterpret_cast<void*>(1234),
+                           NULL,
                            &WeakPointerCallback);
 
   Handle<Object> g2s1 =
@@ -342,12 +349,15 @@ TEST(ObjectGroups) {
     global_handles->Create(HEAP->AllocateFixedArray(1)->ToObjectChecked());
   global_handles->MakeWeak(g2s1.location(),
                            reinterpret_cast<void*>(1234),
+                           NULL,
                            &WeakPointerCallback);
   global_handles->MakeWeak(g2s2.location(),
                            reinterpret_cast<void*>(1234),
+                           NULL,
                            &WeakPointerCallback);
   global_handles->MakeWeak(g2c1.location(),
                            reinterpret_cast<void*>(1234),
+                           NULL,
                            &WeakPointerCallback);
 
   Handle<Object> root = global_handles->Create(*g1s1);  // make a root.
@@ -377,6 +387,7 @@ TEST(ObjectGroups) {
   // Weaken the root.
   global_handles->MakeWeak(root.location(),
                            reinterpret_cast<void*>(1234),
+                           NULL,
                            &WeakPointerCallback);
   // But make children strong roots---all the objects (except for children)
   // should be collectable now.
@@ -405,9 +416,11 @@ TEST(ObjectGroups) {
   // And now make children weak again and collect them.
   global_handles->MakeWeak(g1c1.location(),
                            reinterpret_cast<void*>(1234),
+                           NULL,
                            &WeakPointerCallback);
   global_handles->MakeWeak(g2c1.location(),
                            reinterpret_cast<void*>(1234),
+                           NULL,
                            &WeakPointerCallback);
 
   HEAP->CollectGarbage(OLD_POINTER_SPACE);
@@ -545,15 +558,15 @@ TEST(BootUpMemoryUse) {
     printf("delta: %" V8_PTR_PREFIX "d kB\n", delta / 1024);
     if (sizeof(initial_memory) == 8) {  // 64-bit.
       if (v8::internal::Snapshot::IsEnabled()) {
-        CHECK_LE(delta, 3700 * 1024);
+        CHECK_LE(delta, 4000 * 1024);
       } else {
-        CHECK_LE(delta, 4200 * 1024);
+        CHECK_LE(delta, 4500 * 1024);
       }
     } else {                            // 32-bit.
       if (v8::internal::Snapshot::IsEnabled()) {
-        CHECK_LE(delta, 2600 * 1024);
+        CHECK_LE(delta, 2900 * 1024);
       } else {
-        CHECK_LE(delta, 3000 * 1024);
+        CHECK_LE(delta, 3400 * 1024);
       }
     }
   }

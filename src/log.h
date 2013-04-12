@@ -76,6 +76,7 @@ class Profiler;
 class Semaphore;
 class Ticker;
 class Isolate;
+class PositionsRecorder;
 
 #undef LOG
 #define LOG(isolate, Call)                          \
@@ -127,10 +128,10 @@ class Isolate;
   V(EVAL_TAG,                       "Eval")                             \
   V(FUNCTION_TAG,                   "Function")                         \
   V(KEYED_LOAD_IC_TAG,              "KeyedLoadIC")                      \
-  V(KEYED_LOAD_MEGAMORPHIC_IC_TAG,  "KeyedLoadMegamorphicIC")           \
+  V(KEYED_LOAD_POLYMORPHIC_IC_TAG,  "KeyedLoadPolymorphicIC")           \
   V(KEYED_EXTERNAL_ARRAY_LOAD_IC_TAG, "KeyedExternalArrayLoadIC")       \
   V(KEYED_STORE_IC_TAG,             "KeyedStoreIC")                     \
-  V(KEYED_STORE_MEGAMORPHIC_IC_TAG, "KeyedStoreMegamorphicIC")          \
+  V(KEYED_STORE_POLYMORPHIC_IC_TAG, "KeyedStorePolymorphicIC")          \
   V(KEYED_EXTERNAL_ARRAY_STORE_IC_TAG, "KeyedExternalArrayStoreIC")     \
   V(LAZY_COMPILE_TAG,               "LazyCompile")                      \
   V(LOAD_IC_TAG,                    "LoadIC")                           \
@@ -246,6 +247,19 @@ class Logger {
   void CodeMoveEvent(Address from, Address to);
   // Emits a code delete event.
   void CodeDeleteEvent(Address from);
+  // Emits a code line info add event with Postion type.
+  void CodeLinePosInfoAddPositionEvent(void* jit_handler_data,
+                                       int pc_offset,
+                                       int position);
+  // Emits a code line info add event with StatementPostion type.
+  void CodeLinePosInfoAddStatementPositionEvent(void* jit_handler_data,
+                                                int pc_offset,
+                                                int position);
+  // Emits a code line info start to record event
+  void CodeStartLinePosInfoRecordEvent(PositionsRecorder* pos_recorder);
+  // Emits a code line info finish record event.
+  // It's the callee's responsibility to dispose the parameter jit_handler_data.
+  void CodeEndLinePosInfoRecordEvent(Code* code, void* jit_handler_data);
 
   void SharedFunctionInfoMoveEvent(Address from, Address to);
 
@@ -273,8 +287,9 @@ class Logger {
                           uintptr_t end);
 
   // ==== Events logged by --log-timer-events. ====
-  void TimerEvent(const char* name, int64_t start, int64_t end);
-  void ExternalSwitch(StateTag old_tag, StateTag new_tag);
+  enum StartEnd { START, END };
+
+  void TimerEvent(StartEnd se, const char* name);
 
   static void EnterExternal();
   static void LeaveExternal();
@@ -282,25 +297,25 @@ class Logger {
   class TimerEventScope {
    public:
     TimerEventScope(Isolate* isolate, const char* name)
-        : isolate_(isolate), name_(name), start_(0) {
-      if (FLAG_log_internal_timer_events) start_ = OS::Ticks();
+        : isolate_(isolate), name_(name) {
+      if (FLAG_log_internal_timer_events) LogTimerEvent(START);
     }
 
     ~TimerEventScope() {
-      if (FLAG_log_internal_timer_events) LogTimerEvent();
+      if (FLAG_log_internal_timer_events) LogTimerEvent(END);
     }
 
-    void LogTimerEvent();
+    void LogTimerEvent(StartEnd se);
 
     static const char* v8_recompile_synchronous;
     static const char* v8_recompile_parallel;
     static const char* v8_compile_full_code;
     static const char* v8_execute;
+    static const char* v8_external;
 
    private:
     Isolate* isolate_;
     const char* name_;
-    int64_t start_;
   };
 
   // ==== Events logged by --log-regexp ====
@@ -309,10 +324,14 @@ class Logger {
   void RegExpCompileEvent(Handle<JSRegExp> regexp, bool in_cache);
 
   // Log an event reported from generated code
-  void LogRuntime(Vector<const char> format, JSArray* args);
+  void LogRuntime(Isolate* isolate, Vector<const char> format, JSArray* args);
 
   bool is_logging() {
     return logging_nesting_ > 0;
+  }
+
+  bool is_code_event_handler_enabled() {
+    return code_event_handler_ != NULL;
   }
 
   bool is_logging_code_events() {
@@ -354,14 +373,22 @@ class Logger {
   class NameBuffer;
   class NameMap;
 
-  Logger();
+  explicit Logger(Isolate* isolate);
   ~Logger();
 
   // Issue code notifications.
-  void IssueCodeAddedEvent(Code* code, const char* name, size_t name_len);
+  void IssueCodeAddedEvent(Code* code,
+                           Script* script,
+                           const char* name,
+                           size_t name_len);
   void IssueCodeMovedEvent(Address from, Address to);
   void IssueCodeRemovedEvent(Address from);
-
+  void IssueAddCodeLinePosInfoEvent(void* jit_handler_data,
+                                    int pc_offset,
+                                    int position,
+                                    JitCodeEvent::PositionType position_Type);
+  void* IssueStartCodePosInfoEvent();
+  void IssueEndCodePosInfoEvent(Code* code, void* jit_handler_data);
   // Emits the profiler's first message.
   void ProfilerBeginEvent();
 
@@ -421,6 +448,8 @@ class Logger {
   // Returns whether profiler's sampler is active.
   bool IsProfilerSamplerActive();
 
+  Isolate* isolate_;
+
   // The sampler used by the profiler and the sliding state window.
   Ticker* ticker_;
 
@@ -473,7 +502,6 @@ class Logger {
   Address prev_code_;
 
   int64_t epoch_;
-  static int64_t enter_external_;
 
   friend class CpuProfiler;
 };

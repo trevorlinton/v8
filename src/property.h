@@ -183,9 +183,11 @@ class LookupResult BASE_EMBEDDED {
   }
 
   ~LookupResult() {
-    ASSERT(isolate_->top_lookup_result() == this);
-    isolate_->SetTopLookupResult(next_);
+    ASSERT(isolate()->top_lookup_result() == this);
+    isolate()->SetTopLookupResult(next_);
   }
+
+  Isolate* isolate() const { return isolate_; }
 
   void DescriptorResult(JSObject* holder, PropertyDetails details, int number) {
     lookup_type_ = DESCRIPTOR_TYPE;
@@ -199,16 +201,6 @@ class LookupResult BASE_EMBEDDED {
     details_ = PropertyDetails(NONE, TRANSITION);
     holder_ = holder;
     number_ = number;
-  }
-
-  void ConstantResult(JSObject* holder) {
-    lookup_type_ = CONSTANT_TYPE;
-    holder_ = holder;
-    details_ =
-        PropertyDetails(static_cast<PropertyAttributes>(DONT_ENUM |
-                                                        DONT_DELETE),
-                        CALLBACKS);
-    number_ = -1;
   }
 
   void DictionaryResult(JSObject* holder, int entry) {
@@ -352,7 +344,7 @@ class LookupResult BASE_EMBEDDED {
       case INTERCEPTOR:
       case TRANSITION:
       case NONEXISTENT:
-        return Isolate::Current()->heap()->the_hole_value();
+        return isolate()->heap()->the_hole_value();
     }
     UNREACHABLE();
     return NULL;
@@ -427,10 +419,7 @@ class LookupResult BASE_EMBEDDED {
   }
 
   Object* GetCallbackObject() {
-    if (lookup_type_ == CONSTANT_TYPE) {
-      return HEAP->prototype_accessors();
-    }
-    ASSERT(!IsTransition());
+    ASSERT(type() == CALLBACKS && !IsTransition());
     return GetValue();
   }
 
@@ -466,8 +455,7 @@ class LookupResult BASE_EMBEDDED {
     TRANSITION_TYPE,
     DICTIONARY_TYPE,
     HANDLER_TYPE,
-    INTERCEPTOR_TYPE,
-    CONSTANT_TYPE
+    INTERCEPTOR_TYPE
   } lookup_type_;
 
   JSReceiver* holder_;

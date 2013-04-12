@@ -111,7 +111,10 @@
 //       - Foreign
 //       - SharedFunctionInfo
 //       - Struct
+//         - DeclaredAccessorDescriptor
 //         - AccessorInfo
+//           - DeclaredAccessorInfo
+//           - ExecutableAccessorInfo
 //         - AccessorPair
 //         - AccessCheckInfo
 //         - InterceptorInfo
@@ -175,6 +178,12 @@ enum CreationFlag {
 enum TransitionFlag {
   INSERT_TRANSITION,
   OMIT_TRANSITION
+};
+
+
+enum DebugExtraICState {
+  DEBUG_BREAK,
+  DEBUG_PREPARE_STEP_IN
 };
 
 
@@ -282,7 +291,9 @@ const int kStubMinorKeyBits = kBitsPerInt - kSmiTagSize - kStubMajorKeyBits;
   V(EXTERNAL_PIXEL_ARRAY_TYPE)                                                 \
   V(FILLER_TYPE)                                                               \
                                                                                \
-  V(ACCESSOR_INFO_TYPE)                                                        \
+  V(DECLARED_ACCESSOR_DESCRIPTOR_TYPE)                                         \
+  V(DECLARED_ACCESSOR_INFO_TYPE)                                               \
+  V(EXECUTABLE_ACCESSOR_INFO_TYPE)                                             \
   V(ACCESSOR_PAIR_TYPE)                                                        \
   V(ACCESS_CHECK_INFO_TYPE)                                                    \
   V(INTERCEPTOR_INFO_TYPE)                                                     \
@@ -291,6 +302,7 @@ const int kStubMinorKeyBits = kBitsPerInt - kSmiTagSize - kStubMajorKeyBits;
   V(OBJECT_TEMPLATE_INFO_TYPE)                                                 \
   V(SIGNATURE_INFO_TYPE)                                                       \
   V(TYPE_SWITCH_INFO_TYPE)                                                     \
+  V(ALLOCATION_SITE_INFO_TYPE)                                                 \
   V(SCRIPT_TYPE)                                                               \
   V(CODE_CACHE_TYPE)                                                           \
   V(POLYMORPHIC_CODE_CACHE_TYPE)                                               \
@@ -434,7 +446,11 @@ const int kStubMinorKeyBits = kBitsPerInt - kSmiTagSize - kStubMajorKeyBits;
 // type tags, elements in this list have to be added to the INSTANCE_TYPE_LIST
 // manually.
 #define STRUCT_LIST_ALL(V)                                                     \
-  V(ACCESSOR_INFO, AccessorInfo, accessor_info)                                \
+  V(DECLARED_ACCESSOR_DESCRIPTOR,                                              \
+    DeclaredAccessorDescriptor,                                                \
+    declared_accessor_descriptor)                                              \
+  V(DECLARED_ACCESSOR_INFO, DeclaredAccessorInfo, declared_accessor_info)      \
+  V(EXECUTABLE_ACCESSOR_INFO, ExecutableAccessorInfo, executable_accessor_info)\
   V(ACCESSOR_PAIR, AccessorPair, accessor_pair)                                \
   V(ACCESS_CHECK_INFO, AccessCheckInfo, access_check_info)                     \
   V(INTERCEPTOR_INFO, InterceptorInfo, interceptor_info)                       \
@@ -444,6 +460,7 @@ const int kStubMinorKeyBits = kBitsPerInt - kSmiTagSize - kStubMajorKeyBits;
   V(SIGNATURE_INFO, SignatureInfo, signature_info)                             \
   V(TYPE_SWITCH_INFO, TypeSwitchInfo, type_switch_info)                        \
   V(SCRIPT, Script, script)                                                    \
+  V(ALLOCATION_SITE_INFO, AllocationSiteInfo, allocation_site_info)            \
   V(CODE_CACHE, CodeCache, code_cache)                                         \
   V(POLYMORPHIC_CODE_CACHE, PolymorphicCodeCache, polymorphic_code_cache)      \
   V(TYPE_FEEDBACK_INFO, TypeFeedbackInfo, type_feedback_info)                  \
@@ -530,46 +547,39 @@ const uint32_t kShortcutTypeTag = kConsStringTag;
 enum InstanceType {
   // String types.
   SYMBOL_TYPE = kTwoByteStringTag | kSymbolTag | kSeqStringTag,
-  ASCII_SYMBOL_TYPE = kOneByteStringTag | kAsciiDataHintTag | kSymbolTag |
-                      kSeqStringTag,
+  ASCII_SYMBOL_TYPE = kOneByteStringTag | kSymbolTag | kSeqStringTag,
   CONS_SYMBOL_TYPE = kTwoByteStringTag | kSymbolTag | kConsStringTag,
-  CONS_ASCII_SYMBOL_TYPE = kOneByteStringTag | kAsciiDataHintTag | kSymbolTag |
-                           kConsStringTag,
+  CONS_ASCII_SYMBOL_TYPE = kOneByteStringTag | kSymbolTag | kConsStringTag,
   SHORT_EXTERNAL_SYMBOL_TYPE = kTwoByteStringTag | kSymbolTag |
                                kExternalStringTag | kShortExternalStringTag,
   SHORT_EXTERNAL_SYMBOL_WITH_ASCII_DATA_TYPE =
       kTwoByteStringTag | kSymbolTag | kExternalStringTag |
       kAsciiDataHintTag | kShortExternalStringTag,
-  SHORT_EXTERNAL_ASCII_SYMBOL_TYPE = kOneByteStringTag | kAsciiDataHintTag |
-                                     kExternalStringTag | kSymbolTag |
-                                     kShortExternalStringTag,
+  SHORT_EXTERNAL_ASCII_SYMBOL_TYPE = kOneByteStringTag | kExternalStringTag |
+                                     kSymbolTag | kShortExternalStringTag,
   EXTERNAL_SYMBOL_TYPE = kTwoByteStringTag | kSymbolTag | kExternalStringTag,
   EXTERNAL_SYMBOL_WITH_ASCII_DATA_TYPE =
       kTwoByteStringTag | kSymbolTag | kExternalStringTag | kAsciiDataHintTag,
   EXTERNAL_ASCII_SYMBOL_TYPE =
-      kOneByteStringTag | kAsciiDataHintTag | kSymbolTag | kExternalStringTag,
+      kOneByteStringTag | kSymbolTag | kExternalStringTag,
   STRING_TYPE = kTwoByteStringTag | kSeqStringTag,
-  ASCII_STRING_TYPE = kOneByteStringTag | kAsciiDataHintTag | kSeqStringTag,
+  ASCII_STRING_TYPE = kOneByteStringTag | kSeqStringTag,
   CONS_STRING_TYPE = kTwoByteStringTag | kConsStringTag,
-  CONS_ASCII_STRING_TYPE =
-      kOneByteStringTag | kAsciiDataHintTag | kConsStringTag,
+  CONS_ASCII_STRING_TYPE = kOneByteStringTag | kConsStringTag,
   SLICED_STRING_TYPE = kTwoByteStringTag | kSlicedStringTag,
-  SLICED_ASCII_STRING_TYPE =
-      kOneByteStringTag | kAsciiDataHintTag | kSlicedStringTag,
+  SLICED_ASCII_STRING_TYPE = kOneByteStringTag | kSlicedStringTag,
   SHORT_EXTERNAL_STRING_TYPE =
       kTwoByteStringTag | kExternalStringTag | kShortExternalStringTag,
   SHORT_EXTERNAL_STRING_WITH_ASCII_DATA_TYPE =
       kTwoByteStringTag | kExternalStringTag |
       kAsciiDataHintTag | kShortExternalStringTag,
   SHORT_EXTERNAL_ASCII_STRING_TYPE =
-      kOneByteStringTag | kAsciiDataHintTag |
-      kExternalStringTag | kShortExternalStringTag,
+      kOneByteStringTag | kExternalStringTag | kShortExternalStringTag,
   EXTERNAL_STRING_TYPE = kTwoByteStringTag | kExternalStringTag,
   EXTERNAL_STRING_WITH_ASCII_DATA_TYPE =
       kTwoByteStringTag | kExternalStringTag | kAsciiDataHintTag,
   // LAST_STRING_TYPE
-  EXTERNAL_ASCII_STRING_TYPE =
-      kOneByteStringTag | kAsciiDataHintTag | kExternalStringTag,
+  EXTERNAL_ASCII_STRING_TYPE = kOneByteStringTag | kExternalStringTag,
   PRIVATE_EXTERNAL_ASCII_STRING_TYPE = EXTERNAL_ASCII_STRING_TYPE,
 
   // Objects allocated in their own spaces (never in new space).
@@ -597,7 +607,9 @@ enum InstanceType {
   FILLER_TYPE,  // LAST_DATA_TYPE
 
   // Structs.
-  ACCESSOR_INFO_TYPE,
+  DECLARED_ACCESSOR_DESCRIPTOR_TYPE,
+  DECLARED_ACCESSOR_INFO_TYPE,
+  EXECUTABLE_ACCESSOR_INFO_TYPE,
   ACCESSOR_PAIR_TYPE,
   ACCESS_CHECK_INFO_TYPE,
   INTERCEPTOR_INFO_TYPE,
@@ -606,6 +618,7 @@ enum InstanceType {
   OBJECT_TEMPLATE_INFO_TYPE,
   SIGNATURE_INFO_TYPE,
   TYPE_SWITCH_INFO_TYPE,
+  ALLOCATION_SITE_INFO_TYPE,
   SCRIPT_TYPE,
   CODE_CACHE_TYPE,
   POLYMORPHIC_CODE_CACHE_TYPE,
@@ -860,6 +873,7 @@ class MaybeObject BASE_EMBEDDED {
   V(TransitionArray)                           \
   V(DeoptimizationInputData)                   \
   V(DeoptimizationOutputData)                  \
+  V(DependentCode)                            \
   V(TypeFeedbackCells)                         \
   V(FixedArray)                                \
   V(FixedDoubleArray)                          \
@@ -923,6 +937,7 @@ class Object : public MaybeObject {
 
   inline bool IsFixedArrayBase();
   inline bool IsExternal();
+  inline bool IsAccessorInfo();
 
   // Returns true if this object is an instance of the specified
   // function template.
@@ -1004,7 +1019,7 @@ class Object : public MaybeObject {
                                                       uint32_t index);
 
   // Return the object's prototype (might be Heap::null_value()).
-  Object* GetPrototype();
+  Object* GetPrototype(Isolate* isolate);
 
   // Returns the permanent hash code associated with this object depending on
   // the actual object type.  Might return a failure in case no hash was
@@ -1141,7 +1156,9 @@ class Failure: public MaybeObject {
   static inline Failure* RetryAfterGC();  // NEW_SPACE
   static inline Failure* Exception();
   static inline Failure* InternalError();
-  static inline Failure* OutOfMemoryException();
+  // TODO(jkummerow): The value is temporary instrumentation. Remove it
+  // when it has served its purpose.
+  static inline Failure* OutOfMemoryException(intptr_t value);
   // Casting.
   static inline Failure* cast(MaybeObject* object);
 
@@ -2012,6 +2029,8 @@ class JSObject: public JSReceiver {
                                                ElementsKind to_kind);
 
   MUST_USE_RESULT MaybeObject* TransitionElementsKind(ElementsKind to_kind);
+  MUST_USE_RESULT MaybeObject* PossiblyTransitionArrayBoilerplate(
+      ElementsKind to_kind);
 
   // Replaces an existing transition with a transition to a map with a FIELD.
   MUST_USE_RESULT MaybeObject* ConvertTransitionToMapTransition(
@@ -2602,6 +2621,8 @@ class DescriptorArray: public FixedArray {
   inline Object** GetKeySlot(int descriptor_number);
   inline Object* GetValue(int descriptor_number);
   inline Object** GetValueSlot(int descriptor_number);
+  inline Object** GetDescriptorStartSlot(int descriptor_number);
+  inline Object** GetDescriptorEndSlot(int descriptor_number);
   inline PropertyDetails GetDetails(int descriptor_number);
   inline PropertyType GetType(int descriptor_number);
   inline int GetFieldIndex(int descriptor_number);
@@ -3028,7 +3049,7 @@ class SymbolTable: public HashTable<SymbolTableShape, HashTableKey*> {
   // pointer *s is set to the symbol found.
   MUST_USE_RESULT MaybeObject* LookupUtf8Symbol(Vector<const char> str,
                                                 Object** s);
-  MUST_USE_RESULT MaybeObject* LookupOneByteSymbol(Vector<const char> str,
+  MUST_USE_RESULT MaybeObject* LookupOneByteSymbol(Vector<const uint8_t> str,
                                                    Object** s);
   MUST_USE_RESULT MaybeObject* LookupSubStringOneByteSymbol(
       Handle<SeqOneByteString> str,
@@ -3538,10 +3559,17 @@ class ScopeInfo : public FixedArray {
   // must be a symbol (canonicalized).
   int FunctionContextSlotIndex(String* name, VariableMode* mode);
 
+
+  // Copies all the context locals into an object used to materialize a scope.
+  bool CopyContextLocalsToScopeObject(Isolate* isolate,
+                                      Handle<Context> context,
+                                      Handle<JSObject> scope_object);
+
+
   static Handle<ScopeInfo> Create(Scope* scope, Zone* zone);
 
   // Serializes empty scope info.
-  static ScopeInfo* Empty();
+  static ScopeInfo* Empty(Isolate* isolate);
 
 #ifdef DEBUG
   void Print();
@@ -4304,6 +4332,7 @@ class Code: public HeapObject {
 
   // Testers for IC stub kinds.
   inline bool is_inline_cache_stub();
+  inline bool is_debug_break();
   inline bool is_load_stub() { return kind() == LOAD_IC; }
   inline bool is_keyed_load_stub() { return kind() == KEYED_LOAD_IC; }
   inline bool is_store_stub() { return kind() == STORE_IC; }
@@ -4388,6 +4417,12 @@ class Code: public HeapObject {
   inline bool has_function_cache();
   inline void set_has_function_cache(bool flag);
 
+
+  // [marked_for_deoptimization]: For kind OPTIMIZED_FUNCTION tells whether
+  // the code is going to be deoptimized because of dead embedded maps.
+  inline bool marked_for_deoptimization();
+  inline void set_marked_for_deoptimization(bool flag);
+
   bool allowed_in_shared_map_code_cache();
 
   // Get the safepoint entry for the given pc.
@@ -4433,10 +4468,10 @@ class Code: public HeapObject {
 
   static inline Flags ComputeMonomorphicFlags(
       Kind kind,
-      StubType type,
       ExtraICState extra_ic_state = kNoExtraICState,
-      InlineCacheHolderFlag holder = OWN_MAP,
-      int argc = -1);
+      StubType type = NORMAL,
+      int argc = -1,
+      InlineCacheHolderFlag holder = OWN_MAP);
 
   static inline InlineCacheState ExtractICStateFromFlags(Flags flags);
   static inline StubType ExtractTypeFromFlags(Flags flags);
@@ -4531,6 +4566,10 @@ class Code: public HeapObject {
 
   void PrintDeoptLocation(int bailout_id);
 
+#ifdef VERIFY_HEAP
+  void VerifyEmbeddedMapsDependency();
+#endif
+
   // Max loop nesting marker used to postpose OSR. We don't take loop
   // nesting that is deeper than 5 levels into account.
   static const int kMaxLoopNestingMarker = 6;
@@ -4593,11 +4632,16 @@ class Code: public HeapObject {
   static const int kHasFunctionCacheFirstBit =
       kStackSlotsFirstBit + kStackSlotsBitCount;
   static const int kHasFunctionCacheBitCount = 1;
+  static const int kMarkedForDeoptimizationFirstBit =
+      kStackSlotsFirstBit + kStackSlotsBitCount + 1;
+  static const int kMarkedForDeoptimizationBitCount = 1;
 
   STATIC_ASSERT(kStackSlotsFirstBit + kStackSlotsBitCount <= 32);
   STATIC_ASSERT(kUnaryOpTypeFirstBit + kUnaryOpTypeBitCount <= 32);
   STATIC_ASSERT(kToBooleanStateFirstBit + kToBooleanStateBitCount <= 32);
   STATIC_ASSERT(kHasFunctionCacheFirstBit + kHasFunctionCacheBitCount <= 32);
+  STATIC_ASSERT(kMarkedForDeoptimizationFirstBit +
+                kMarkedForDeoptimizationBitCount <= 32);
 
   class StackSlotsField: public BitField<int,
       kStackSlotsFirstBit, kStackSlotsBitCount> {};  // NOLINT
@@ -4607,6 +4651,9 @@ class Code: public HeapObject {
       kToBooleanStateFirstBit, kToBooleanStateBitCount> {};  // NOLINT
   class HasFunctionCacheField: public BitField<bool,
       kHasFunctionCacheFirstBit, kHasFunctionCacheBitCount> {};  // NOLINT
+  class MarkedForDeoptimizationField: public BitField<bool,
+      kMarkedForDeoptimizationFirstBit,
+      kMarkedForDeoptimizationBitCount> {};  // NOLINT
 
   // KindSpecificFlags2 layout (STUB and OPTIMIZED_FUNCTION)
   static const int kStubMajorKeyFirstBit = 0;
@@ -4651,6 +4698,75 @@ class Code: public HeapObject {
                                    MarkingParity parity);
 
   DISALLOW_IMPLICIT_CONSTRUCTORS(Code);
+};
+
+
+// This class describes the layout of dependent codes array of a map. The
+// array is partitioned into several groups of dependent codes. Each group
+// contains codes with the same dependency on the map. The array has the
+// following layout for n dependency groups:
+//
+// +----+----+-----+----+---------+----------+-----+---------+-----------+
+// | C1 | C2 | ... | Cn | group 1 |  group 2 | ... | group n | undefined |
+// +----+----+-----+----+---------+----------+-----+---------+-----------+
+//
+// The first n elements are Smis, each of them specifies the number of codes
+// in the corresponding group. The subsequent elements contain grouped code
+// objects. The suffix of the array can be filled with the undefined value if
+// the number of codes is less than the length of the array. The order of the
+// code objects within a group is not preserved.
+//
+// All code indexes used in the class are counted starting from the first
+// code object of the first group. In other words, code index 0 corresponds
+// to array index n = kCodesStartIndex.
+
+class DependentCode: public FixedArray {
+ public:
+  enum DependencyGroup {
+    // Group of code that weakly embed this map and depend on being
+    // deoptimized when the map is garbage collected.
+    kWeaklyEmbeddedGroup,
+    // Group of code that omit run-time prototype checks for prototypes
+    // described by this map. The group is deoptimized whenever an object
+    // described by this map changes shape (and transitions to a new map),
+    // possibly invalidating the assumptions embedded in the code.
+    kPrototypeCheckGroup,
+    kGroupCount = kPrototypeCheckGroup + 1
+  };
+
+  // Array for holding the index of the first code object of each group.
+  // The last element stores the total number of code objects.
+  class GroupStartIndexes {
+   public:
+    explicit GroupStartIndexes(DependentCode* entries);
+    void Recompute(DependentCode* entries);
+    int at(int i) { return start_indexes_[i]; }
+    int number_of_entries() { return start_indexes_[kGroupCount]; }
+   private:
+    int start_indexes_[kGroupCount + 1];
+  };
+
+  bool Contains(DependencyGroup group, Code* code);
+  static Handle<DependentCode> Insert(Handle<DependentCode> entries,
+                                       DependencyGroup group,
+                                       Handle<Code> value);
+  void DeoptimizeDependentCodeGroup(DependentCode::DependencyGroup group);
+
+  // The following low-level accessors should only be used by this class
+  // and the mark compact collector.
+  inline int number_of_entries(DependencyGroup group);
+  inline void set_number_of_entries(DependencyGroup group, int value);
+  inline Code* code_at(int i);
+  inline void set_code_at(int i, Code* value);
+  inline Object** code_slot_at(int i);
+  inline void clear_code_at(int i);
+  static inline DependentCode* cast(Object* object);
+
+ private:
+  // Make a room at the end of the given group by moving out the first
+  // code objects of the subsequent groups.
+  inline void ExtendGroup(DependencyGroup group);
+  static const int kCodesStartIndex = kGroupCount;
 };
 
 
@@ -4883,6 +4999,9 @@ class Map: public HeapObject {
   // [stub cache]: contains stubs compiled for this map.
   DECL_ACCESSORS(code_cache, Object)
 
+  // [dependent code]: list of optimized codes that have this map embedded.
+  DECL_ACCESSORS(dependent_code, DependentCode)
+
   // [back pointer]: points back to the parent map from which a transition
   // leads to this map. The field overlaps with prototype transitions and the
   // back pointer will be moved into the prototype transitions array if
@@ -4974,7 +5093,7 @@ class Map: public HeapObject {
     set_bit_field3(EnumLengthBits::update(bit_field3(), length));
   }
 
-
+  inline bool CanTrackAllocationSite();
   inline bool owns_descriptors();
   inline void set_owns_descriptors(bool is_shared);
   inline bool is_observed();
@@ -5092,12 +5211,29 @@ class Map: public HeapObject {
   void ZapPrototypeTransitions();
   void ZapTransitions();
 
+  bool CanTransition() {
+    // Only JSObject and subtypes have map transitions and back pointers.
+    STATIC_ASSERT(LAST_TYPE == LAST_JS_OBJECT_TYPE);
+    return instance_type() >= FIRST_JS_OBJECT_TYPE;
+  }
+
+  // Fires when the layout of an object with a leaf map changes.
+  // This includes adding transitions to the leaf map or changing
+  // the descriptor array.
+  inline void NotifyLeafMapLayoutChange();
+
+  inline bool CanOmitPrototypeChecks();
+
+  inline void AddDependentCode(DependentCode::DependencyGroup group,
+                               Handle<Code> code);
+
   // Dispatched behavior.
   DECLARE_PRINTER(Map)
   DECLARE_VERIFIER(Map)
 
 #ifdef VERIFY_HEAP
   void SharedMapVerify();
+  void VerifyOmittedPrototypeChecks();
 #endif
 
   inline int visitor_id();
@@ -5140,7 +5276,8 @@ class Map: public HeapObject {
   static const int kDescriptorsOffset =
       kTransitionsOrBackPointerOffset + kPointerSize;
   static const int kCodeCacheOffset = kDescriptorsOffset + kPointerSize;
-  static const int kBitField3Offset = kCodeCacheOffset + kPointerSize;
+  static const int kDependentCodeOffset = kCodeCacheOffset + kPointerSize;
+  static const int kBitField3Offset = kDependentCodeOffset + kPointerSize;
   static const int kSize = kBitField3Offset + kPointerSize;
 
   // Layout of pointer fields. Heap iteration code relies on them
@@ -5383,6 +5520,7 @@ class SharedFunctionInfo: public HeapObject {
 
   // [code]: Function code.
   DECL_ACCESSORS(code, Code)
+  inline void ReplaceCode(Code* code);
 
   // [optimized_code_map]: Map from native context to optimized code
   // and a shared literals array or Smi 0 if none.
@@ -6569,7 +6707,6 @@ class JSRegExp: public JSObject {
   inline Object* DataAtUnchecked(int index);
   inline void SetDataAtUnchecked(int index, Object* value, Heap* heap);
   inline Type TypeTagUnchecked();
-  inline void ResetLastIndex();
 
   static int code_index(bool is_ascii) {
     if (is_ascii) {
@@ -6901,6 +7038,36 @@ class TypeFeedbackInfo: public Struct {
 };
 
 
+enum AllocationSiteMode {
+  DONT_TRACK_ALLOCATION_SITE,
+  TRACK_ALLOCATION_SITE,
+  LAST_ALLOCATION_SITE_MODE = TRACK_ALLOCATION_SITE
+};
+
+
+class AllocationSiteInfo: public Struct {
+ public:
+  DECL_ACCESSORS(payload, Object)
+
+  static inline AllocationSiteInfo* cast(Object* obj);
+
+  DECLARE_PRINTER(AllocationSiteInfo)
+  DECLARE_VERIFIER(AllocationSiteInfo)
+
+  // Returns NULL if no AllocationSiteInfo is available for object.
+  static AllocationSiteInfo* FindForJSObject(JSObject* object);
+
+  static AllocationSiteMode GetMode(ElementsKind boilerplate_elements_kind);
+  static AllocationSiteMode GetMode(ElementsKind from, ElementsKind to);
+
+  static const int kPayloadOffset = HeapObject::kHeaderSize;
+  static const int kSize = kPayloadOffset + kPointerSize;
+
+ private:
+  DISALLOW_IMPLICIT_CONSTRUCTORS(AllocationSiteInfo);
+};
+
+
 // Representation of a slow alias as part of a non-strict arguments objects.
 // For fast aliases (if HasNonStrictArgumentsElements()):
 // - the parameter map contains an index into the context
@@ -7061,11 +7228,11 @@ class String: public HeapObject {
     // Returns true if the structure contains two-byte content.
     bool IsTwoByte() { return state_ == TWO_BYTE; }
 
-    // Return the ASCII content of the string. Only use if IsAscii() returns
+    // Return the one byte content of the string. Only use if IsAscii() returns
     // true.
-    Vector<const char> ToAsciiVector() {
+    Vector<const uint8_t> ToOneByteVector() {
       ASSERT_EQ(ASCII, state_);
-      return Vector<const char>::cast(buffer_);
+      return buffer_;
     }
     // Return the two-byte content of the string. Only use if IsTwoByte()
     // returns true.
@@ -7078,15 +7245,15 @@ class String: public HeapObject {
     enum State { NON_FLAT, ASCII, TWO_BYTE };
 
     // Constructors only used by String::GetFlatContent().
-    explicit FlatContent(Vector<const char> chars)
-        : buffer_(Vector<const byte>::cast(chars)),
+    explicit FlatContent(Vector<const uint8_t> chars)
+        : buffer_(chars),
           state_(ASCII) { }
     explicit FlatContent(Vector<const uc16> chars)
         : buffer_(Vector<const byte>::cast(chars)),
           state_(TWO_BYTE) { }
     FlatContent() : buffer_(), state_(NON_FLAT) { }
 
-    Vector<const byte> buffer_;
+    Vector<const uint8_t> buffer_;
     State state_;
 
     friend class String;
@@ -7116,6 +7283,8 @@ class String: public HeapObject {
   // NOTE: this should be considered only a hint.  False negatives are
   // possible.
   inline bool HasOnlyAsciiChars();
+
+  inline bool IsOneByteConvertible();
 
   // Get and set individual two byte chars in the string.
   inline void Set(int index, uint16_t value);
@@ -7167,8 +7336,8 @@ class String: public HeapObject {
 
   // String equality operations.
   inline bool Equals(String* other);
-  bool IsEqualTo(Vector<const char> str);
-  bool IsAsciiEqualTo(Vector<const char> str);
+  bool IsUtf8EqualTo(Vector<const char> str);
+  bool IsOneByteEqualTo(Vector<const uint8_t> str);
   bool IsTwoByteEqualTo(Vector<const uc16> str);
 
   // Return a UTF8 representation of the string.  The string is null
@@ -7244,9 +7413,9 @@ class String: public HeapObject {
   // value into an array index.
   static const int kMaxArrayIndexSize = 10;
 
-  // Max ASCII char code.
-  static const int kMaxAsciiCharCode = unibrow::Utf8::kMaxOneByteChar;
-  static const unsigned kMaxAsciiCharCodeU = unibrow::Utf8::kMaxOneByteChar;
+  // Max char codes.
+  static const int32_t kMaxOneByteCharCode = unibrow::Latin1::kMaxChar;
+  static const uint32_t kMaxOneByteCharCodeU = unibrow::Latin1::kMaxChar;
   static const int kMaxUtf16CodeUnit = 0xffff;
 
   // Mask constant for checking if a string has a computed hash code
@@ -7331,7 +7500,7 @@ class String: public HeapObject {
     const char* start = chars;
     const char* limit = chars + length;
 #ifdef V8_HOST_CAN_READ_UNALIGNED
-    ASSERT(kMaxAsciiCharCode == 0x7F);
+    ASSERT(unibrow::Utf8::kMaxOneByteChar == 0x7F);
     const uintptr_t non_ascii_mask = kUintptrAllBitsSet / 0xFF * 0x80;
     while (chars + sizeof(uintptr_t) <= limit) {
       if (*reinterpret_cast<const uintptr_t*>(chars) & non_ascii_mask) {
@@ -7341,7 +7510,7 @@ class String: public HeapObject {
     }
 #endif
     while (chars < limit) {
-      if (static_cast<uint8_t>(*chars) > kMaxAsciiCharCodeU) {
+      if (static_cast<uint8_t>(*chars) > unibrow::Utf8::kMaxOneByteChar) {
         return static_cast<int>(chars - start);
       }
       ++chars;
@@ -7353,18 +7522,23 @@ class String: public HeapObject {
     return NonAsciiStart(chars, length) >= length;
   }
 
-  static inline int NonAsciiStart(const uc16* chars, int length) {
+  static inline bool IsAscii(const uint8_t* chars, int length) {
+    return
+        NonAsciiStart(reinterpret_cast<const char*>(chars), length) >= length;
+  }
+
+  static inline int NonOneByteStart(const uc16* chars, int length) {
     const uc16* limit = chars + length;
     const uc16* start = chars;
     while (chars < limit) {
-      if (*chars > kMaxAsciiCharCodeU) return static_cast<int>(chars - start);
+      if (*chars > kMaxOneByteCharCodeU) return static_cast<int>(chars - start);
       ++chars;
     }
     return static_cast<int>(chars - start);
   }
 
-  static inline bool IsAscii(const uc16* chars, int length) {
-    return NonAsciiStart(chars, length) >= length;
+  static inline bool IsOneByte(const uc16* chars, int length) {
+    return NonOneByteStart(chars, length) >= length;
   }
 
   template<class Visitor, class ConsOp>
@@ -7429,7 +7603,7 @@ class SeqOneByteString: public SeqString {
   // Get the address of the characters in this string.
   inline Address GetCharsAddress();
 
-  inline char* GetChars();
+  inline uint8_t* GetChars();
 
   // Casting
   static inline SeqOneByteString* cast(Object* obj);
@@ -7614,6 +7788,9 @@ class ExternalString: public String {
   static const int kResourceDataOffset = kResourceOffset + kPointerSize;
   static const int kSize = kResourceDataOffset + kPointerSize;
 
+  static const int kMaxShortLength =
+      (kShortSize - SeqString::kHeaderSize) / kCharSize;
+
   // Return whether external string is short (data pointer is not cached).
   inline bool is_short();
 
@@ -7642,7 +7819,7 @@ class ExternalAsciiString: public ExternalString {
   // which the pointer cache has to be refreshed.
   inline void update_data_cache();
 
-  inline const char* GetChars();
+  inline const uint8_t* GetChars();
 
   // Dispatched behavior.
   inline uint16_t ExternalAsciiStringGet(int index);
@@ -8229,20 +8406,8 @@ class JSRegExpResult: public JSArray {
 };
 
 
-// An accessor must have a getter, but can have no setter.
-//
-// When setting a property, V8 searches accessors in prototypes.
-// If an accessor was found and it does not have a setter,
-// the request is ignored.
-//
-// If the accessor in the prototype has the READ_ONLY property attribute, then
-// a new value is added to the local object when the property is set.
-// This shadows the accessor in the prototype.
 class AccessorInfo: public Struct {
  public:
-  DECL_ACCESSORS(getter, Object)
-  DECL_ACCESSORS(setter, Object)
-  DECL_ACCESSORS(data, Object)
   DECL_ACCESSORS(name, Object)
   DECL_ACCESSORS(flag, Smi)
   DECL_ACCESSORS(expected_receiver_type, Object)
@@ -8265,13 +8430,10 @@ class AccessorInfo: public Struct {
   static inline AccessorInfo* cast(Object* obj);
 
   // Dispatched behavior.
-  DECLARE_PRINTER(AccessorInfo)
   DECLARE_VERIFIER(AccessorInfo)
 
-  static const int kGetterOffset = HeapObject::kHeaderSize;
-  static const int kSetterOffset = kGetterOffset + kPointerSize;
-  static const int kDataOffset = kSetterOffset + kPointerSize;
-  static const int kNameOffset = kDataOffset + kPointerSize;
+
+  static const int kNameOffset = HeapObject::kHeaderSize;
   static const int kFlagOffset = kNameOffset + kPointerSize;
   static const int kExpectedReceiverTypeOffset = kFlagOffset + kPointerSize;
   static const int kSize = kExpectedReceiverTypeOffset + kPointerSize;
@@ -8284,6 +8446,74 @@ class AccessorInfo: public Struct {
   class AttributesField: public BitField<PropertyAttributes, 3, 3> {};
 
   DISALLOW_IMPLICIT_CONSTRUCTORS(AccessorInfo);
+};
+
+
+class DeclaredAccessorDescriptor: public Struct {
+ public:
+  // TODO(dcarney): Fill out this class.
+  DECL_ACCESSORS(internal_field, Smi)
+
+  static inline DeclaredAccessorDescriptor* cast(Object* obj);
+
+  // Dispatched behavior.
+  DECLARE_PRINTER(DeclaredAccessorDescriptor)
+  DECLARE_VERIFIER(DeclaredAccessorDescriptor)
+
+  static const int kInternalFieldOffset = HeapObject::kHeaderSize;
+  static const int kSize = kInternalFieldOffset + kPointerSize;
+
+ private:
+  DISALLOW_IMPLICIT_CONSTRUCTORS(DeclaredAccessorDescriptor);
+};
+
+
+class DeclaredAccessorInfo: public AccessorInfo {
+ public:
+  DECL_ACCESSORS(descriptor, DeclaredAccessorDescriptor)
+
+  static inline DeclaredAccessorInfo* cast(Object* obj);
+
+  // Dispatched behavior.
+  DECLARE_PRINTER(DeclaredAccessorInfo)
+  DECLARE_VERIFIER(DeclaredAccessorInfo)
+
+  static const int kDescriptorOffset = AccessorInfo::kSize;
+  static const int kSize = kDescriptorOffset + kPointerSize;
+
+ private:
+  DISALLOW_IMPLICIT_CONSTRUCTORS(DeclaredAccessorInfo);
+};
+
+
+// An accessor must have a getter, but can have no setter.
+//
+// When setting a property, V8 searches accessors in prototypes.
+// If an accessor was found and it does not have a setter,
+// the request is ignored.
+//
+// If the accessor in the prototype has the READ_ONLY property attribute, then
+// a new value is added to the local object when the property is set.
+// This shadows the accessor in the prototype.
+class ExecutableAccessorInfo: public AccessorInfo {
+ public:
+  DECL_ACCESSORS(getter, Object)
+  DECL_ACCESSORS(setter, Object)
+  DECL_ACCESSORS(data, Object)
+
+  static inline ExecutableAccessorInfo* cast(Object* obj);
+
+  // Dispatched behavior.
+  DECLARE_PRINTER(ExecutableAccessorInfo)
+  DECLARE_VERIFIER(ExecutableAccessorInfo)
+
+  static const int kGetterOffset = AccessorInfo::kSize;
+  static const int kSetterOffset = kGetterOffset + kPointerSize;
+  static const int kDataOffset = kSetterOffset + kPointerSize;
+  static const int kSize = kDataOffset + kPointerSize;
+
+ private:
+  DISALLOW_IMPLICIT_CONSTRUCTORS(ExecutableAccessorInfo);
 };
 
 

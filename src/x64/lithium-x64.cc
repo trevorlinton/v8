@@ -690,6 +690,11 @@ LInstruction* LChunkBuilder::DoBlockEntry(HBlockEntry* instr) {
 }
 
 
+LInstruction* LChunkBuilder::DoDummyUse(HDummyUse* instr) {
+  return DefineAsRegister(new(zone()) LDummyUse(UseAny(instr->value())));
+}
+
+
 LInstruction* LChunkBuilder::DoSoftDeoptimize(HSoftDeoptimize* instr) {
   return AssignEnvironment(new(zone()) LDeoptimize);
 }
@@ -974,6 +979,12 @@ LInstruction* LChunkBuilder::DoInstanceOfKnownGlobal(
 }
 
 
+LInstruction* LChunkBuilder::DoInstanceSize(HInstanceSize* instr) {
+  LOperand* object = UseRegisterAtStart(instr->object());
+  return DefineAsRegister(new(zone()) LInstanceSize(object));
+}
+
+
 LInstruction* LChunkBuilder::DoWrapReceiver(HWrapReceiver* instr) {
   LOperand* receiver = UseRegister(instr->receiver());
   LOperand* function = UseRegisterAtStart(instr->function());
@@ -1073,7 +1084,16 @@ LInstruction* LChunkBuilder::DoUnaryMathOperation(HUnaryMathOperation* instr) {
     LMathExp* result = new(zone()) LMathExp(value, temp1, temp2);
     return DefineAsRegister(result);
   } else {
-    LOperand* input = UseRegisterAtStart(instr->value());
+    LOperand* input;
+    if (op == kMathRound &&
+        (!CpuFeatures::IsSupported(SSE4_1) ||
+         instr->CheckFlag(HValue::kBailoutOnMinusZero))) {
+      // Math.round implemented without roundsd.  Input may be overwritten.
+      ASSERT(instr->value()->representation().IsDouble());
+      input = UseTempRegister(instr->value());
+    } else {
+      input = UseRegisterAtStart(instr->value());
+    }
     LUnaryMathOperation* result = new(zone()) LUnaryMathOperation(input);
     switch (op) {
       case kMathAbs:
@@ -1631,6 +1651,17 @@ LInstruction* LChunkBuilder::DoSeqStringSetChar(HSeqStringSetChar* instr) {
 }
 
 
+LInstruction* LChunkBuilder::DoNumericConstraint(HNumericConstraint* instr) {
+  return NULL;
+}
+
+
+LInstruction* LChunkBuilder::DoInductionVariableAnnotation(
+    HInductionVariableAnnotation* instr) {
+  return NULL;
+}
+
+
 LInstruction* LChunkBuilder::DoBoundsCheck(HBoundsCheck* instr) {
   LOperand* value = UseRegisterOrConstantAtStart(instr->index());
   LOperand* length = Use(instr->length());
@@ -1756,6 +1787,12 @@ LInstruction* LChunkBuilder::DoCheckPrototypeMaps(HCheckPrototypeMaps* instr) {
 
 
 LInstruction* LChunkBuilder::DoCheckSmi(HCheckSmi* instr) {
+  LOperand* value = UseRegisterAtStart(instr->value());
+  return AssignEnvironment(new(zone()) LCheckSmi(value));
+}
+
+
+LInstruction* LChunkBuilder::DoCheckSmiOrInt32(HCheckSmiOrInt32* instr) {
   LOperand* value = UseRegisterAtStart(instr->value());
   return AssignEnvironment(new(zone()) LCheckSmi(value));
 }
@@ -2034,15 +2071,18 @@ LInstruction* LChunkBuilder::DoStoreKeyedGeneric(HStoreKeyedGeneric* instr) {
 
 LInstruction* LChunkBuilder::DoTransitionElementsKind(
     HTransitionElementsKind* instr) {
-  ElementsKind from_kind = instr->original_map()->elements_kind();
-  ElementsKind to_kind = instr->transitioned_map()->elements_kind();
-  if (IsSimpleMapChangeTransition(from_kind, to_kind)) {
+  LOperand* object = UseRegister(instr->object());
+  if (IsSimpleMapChangeTransition(instr->from_kind(), instr->to_kind())) {
     LOperand* object = UseRegister(instr->object());
     LOperand* new_map_reg = TempRegister();
     LOperand* temp_reg = TempRegister();
     LTransitionElementsKind* result =
         new(zone()) LTransitionElementsKind(object, new_map_reg, temp_reg);
-    return DefineSameAsFirst(result);
+    return result;
+  } else if (FLAG_compiled_transitions) {
+    LTransitionElementsKind* result =
+        new(zone()) LTransitionElementsKind(object, NULL, NULL);
+    return AssignPointerMap(result);
   } else {
     LOperand* object = UseFixed(instr->object(), rax);
     LOperand* fixed_object_reg = FixedTemp(rdx);
@@ -2051,8 +2091,18 @@ LInstruction* LChunkBuilder::DoTransitionElementsKind(
         new(zone()) LTransitionElementsKind(object,
                                             new_map_reg,
                                             fixed_object_reg);
-    return MarkAsCall(DefineFixed(result, rax), instr);
+    return MarkAsCall(result, instr);
   }
+}
+
+
+LInstruction* LChunkBuilder::DoTrapAllocationMemento(
+    HTrapAllocationMemento* instr) {
+  LOperand* object = UseRegister(instr->object());
+  LOperand* temp = TempRegister();
+  LTrapAllocationMemento* result =
+      new(zone()) LTrapAllocationMemento(object, temp);
+  return AssignEnvironment(result);
 }
 
 
@@ -2124,7 +2174,17 @@ LInstruction* LChunkBuilder::DoStringLength(HStringLength* instr) {
 
 
 LInstruction* LChunkBuilder::DoAllocateObject(HAllocateObject* instr) {
+  info()->MarkAsDeferredCalling();
   LAllocateObject* result = new(zone()) LAllocateObject(TempRegister());
+  return AssignPointerMap(DefineAsRegister(result));
+}
+
+
+LInstruction* LChunkBuilder::DoAllocate(HAllocate* instr) {
+  info()->MarkAsDeferredCalling();
+  LOperand* size = UseTempRegister(instr->size());
+  LOperand* temp = TempRegister();
+  LAllocate* result = new(zone()) LAllocate(size, temp);
   return AssignPointerMap(DefineAsRegister(result));
 }
 
@@ -2172,7 +2232,7 @@ LInstruction* LChunkBuilder::DoOsrEntry(HOsrEntry* instr) {
 
 LInstruction* LChunkBuilder::DoParameter(HParameter* instr) {
   LParameter* result = new(zone()) LParameter;
-  if (info()->IsOptimizing()) {
+  if (instr->kind() == HParameter::STACK_PARAMETER) {
     int spill_index = chunk()->GetParameterStackSlot(instr->index());
     return DefineAsSpilled(result, spill_index);
   } else {
@@ -2294,8 +2354,8 @@ LInstruction* LChunkBuilder::DoEnterInlined(HEnterInlined* instr) {
                                                instr->arguments_count(),
                                                instr->function(),
                                                undefined,
-                                               instr->call_kind(),
-                                               instr->inlining_kind());
+                                               instr->inlining_kind(),
+                                               instr->undefined_receiver());
   if (instr->arguments_var() != NULL) {
     inner->Bind(instr->arguments_var(), graph()->GetArgumentsObject());
   }

@@ -248,7 +248,7 @@ class RelocInfo BASE_EMBEDDED {
     // add more as needed
     // Pseudo-types
     NUMBER_OF_MODES,  // There are at most 15 modes with noncompact encoding.
-    NONE,  // never recorded 32-bit value
+    NONE32,  // never recorded 32-bit value
     NONE64,  // never recorded 64-bit value
     CODE_AGE_SEQUENCE,  // Not stored in RelocInfo array, used explictly by
                         // code aging.
@@ -320,7 +320,7 @@ class RelocInfo BASE_EMBEDDED {
     return mode == DEBUG_BREAK_SLOT;
   }
   static inline bool IsNone(Mode mode) {
-    return mode == NONE || mode == NONE64;
+    return mode == NONE32 || mode == NONE64;
   }
   static inline bool IsCodeAgeSequence(Mode mode) {
     return mode == CODE_AGE_SEQUENCE;
@@ -408,6 +408,12 @@ class RelocInfo BASE_EMBEDDED {
   // Check whether this debug break slot has been patched with a call to the
   // debugger.
   INLINE(bool IsPatchedDebugBreakSlotSequence());
+
+#ifdef DEBUG
+  // Check whether the given code contains relocation information that
+  // either is position-relative or movable by the garbage collector.
+  static bool RequiresRelocation(const CodeDesc& desc);
+#endif
 
 #ifdef ENABLE_DISASSEMBLER
   // Printing
@@ -718,9 +724,9 @@ class ExternalReference BASE_EMBEDDED {
   static ExternalReference power_double_double_function(Isolate* isolate);
   static ExternalReference power_double_int_function(Isolate* isolate);
 
-  static ExternalReference handle_scope_next_address();
-  static ExternalReference handle_scope_limit_address();
-  static ExternalReference handle_scope_level_address();
+  static ExternalReference handle_scope_next_address(Isolate* isolate);
+  static ExternalReference handle_scope_limit_address(Isolate* isolate);
+  static ExternalReference handle_scope_level_address(Isolate* isolate);
 
   static ExternalReference scheduled_exception_address(Isolate* isolate);
   static ExternalReference address_of_pending_message_obj(Isolate* isolate);
@@ -730,6 +736,7 @@ class ExternalReference BASE_EMBEDDED {
   // Static variables containing common double constants.
   static ExternalReference address_of_min_int();
   static ExternalReference address_of_one_half();
+  static ExternalReference address_of_minus_one_half();
   static ExternalReference address_of_minus_zero();
   static ExternalReference address_of_zero();
   static ExternalReference address_of_uint8_max_value();
@@ -748,6 +755,8 @@ class ExternalReference BASE_EMBEDDED {
   static ExternalReference page_flags(Page* page);
 
   static ExternalReference ForDeoptEntry(Address entry);
+
+  static ExternalReference cpu_features();
 
   Address address() const {return reinterpret_cast<Address>(address_);}
 
@@ -842,6 +851,7 @@ class PositionsRecorder BASE_EMBEDDED {
 #ifdef ENABLE_GDB_JIT_INTERFACE
     gdbjit_lineinfo_ = NULL;
 #endif
+    jit_handler_data_ = NULL;
   }
 
 #ifdef ENABLE_GDB_JIT_INTERFACE
@@ -861,7 +871,15 @@ class PositionsRecorder BASE_EMBEDDED {
     return lineinfo;
   }
 #endif
+  void AttachJITHandlerData(void* user_data) {
+    jit_handler_data_ = user_data;
+  }
 
+  void* DetachJITHandlerData() {
+    void* old_data = jit_handler_data_;
+    jit_handler_data_ = NULL;
+    return old_data;
+  }
   // Set current position to pos.
   void RecordPosition(int pos);
 
@@ -884,6 +902,9 @@ class PositionsRecorder BASE_EMBEDDED {
   GDBJITLineInfo* gdbjit_lineinfo_;
 #endif
 
+  // Currently jit_handler_data_ is used to store JITHandler-specific data
+  // over the lifetime of a PositionsRecorder
+  void* jit_handler_data_;
   friend class PreservePositionScope;
 
   DISALLOW_COPY_AND_ASSIGN(PositionsRecorder);
@@ -948,6 +969,7 @@ inline int NumberOfBitsSet(uint32_t x) {
 bool EvalComparison(Token::Value op, double op1, double op2);
 
 // Computes pow(x, y) with the special cases in the spec for Math.pow.
+double power_helper(double x, double y);
 double power_double_int(double x, int y);
 double power_double_double(double x, double y);
 

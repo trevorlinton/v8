@@ -89,7 +89,7 @@ namespace internal {
   F(ForceParallelRecompile, 1, 1) \
   F(InstallRecompiledCode, 1, 1) \
   F(NotifyDeoptimized, 1, 1) \
-  F(NotifyICMiss, 0, 1) \
+  F(NotifyStubFailure, 0, 1) \
   F(NotifyOSR, 0, 1) \
   F(DeoptimizeFunction, 1, 1) \
   F(ClearFunctionTypeFeedback, 1, 1) \
@@ -104,6 +104,7 @@ namespace internal {
   F(StoreArrayLiteralElement, 5, 1) \
   F(DebugCallbackSupportsStepping, 1, 1) \
   F(DebugPrepareStepInIfStepping, 1, 1) \
+  F(FlattenString, 1, 1) \
   \
   /* Array join support */ \
   F(PushIfAbsent, 2, 1) \
@@ -201,7 +202,7 @@ namespace internal {
   F(StringLastIndexOf, 3, 1) \
   F(StringLocaleCompare, 2, 1) \
   F(SubString, 3, 1) \
-  F(StringReplaceRegExpWithString, 4, 1) \
+  F(StringReplaceGlobalRegExpWithString, 4, 1) \
   F(StringReplaceOneCharWithString, 3, 1) \
   F(StringMatch, 3, 1) \
   F(StringTrim, 3, 1) \
@@ -237,7 +238,9 @@ namespace internal {
   F(FunctionIsBuiltin, 1, 1) \
   F(GetScript, 1, 1) \
   F(CollectStackTrace, 3, 1) \
-  F(GetOverflowedRawStackTrace, 1, 1) \
+  F(MarkOneShotGetter, 1, 1) \
+  F(GetOverflowedStackTrace, 1, 1) \
+  F(SetOverflowedStackTrace, 2, 1) \
   F(GetV8Version, 0, 1) \
   \
   F(ClassOf, 1, 1) \
@@ -330,9 +333,8 @@ namespace internal {
   F(SetIsObserved, 2, 1) \
   F(SetObserverDeliveryPending, 0, 1) \
   F(GetObservationState, 0, 1) \
-  F(CreateObjectHashTable, 0, 1) \
-  F(ObjectHashTableGet, 2, 1) \
-  F(ObjectHashTableSet, 3, 1) \
+  F(ObservationWeakMapCreate, 0, 1) \
+  F(UnwrapGlobalProxy, 1, 1) \
   \
   /* Statements */ \
   F(NewClosure, 3, 1) \
@@ -406,6 +408,7 @@ namespace internal {
   F(HasExternalFloatElements, 1, 1) \
   F(HasExternalDoubleElements, 1, 1) \
   F(HasFastProperties, 1, 1) \
+  F(TransitionElementsKind, 2, 1) \
   F(TransitionElementsSmiToDouble, 1, 1) \
   F(TransitionElementsDoubleToObject, 1, 1) \
   F(HaveSameMap, 2, 1) \
@@ -475,20 +478,6 @@ namespace internal {
   F(SetFlags, 1, 1) \
   F(CollectGarbage, 1, 1) \
   F(GetHeapUsage, 0, 1) \
-  \
-  /* LiveObjectList support*/ \
-  F(HasLOLEnabled, 0, 1) \
-  F(CaptureLOL, 0, 1) \
-  F(DeleteLOL, 1, 1) \
-  F(DumpLOL, 5, 1) \
-  F(GetLOLObj, 1, 1) \
-  F(GetLOLObjId, 1, 1) \
-  F(GetLOLObjRetainers, 6, 1) \
-  F(GetLOLPath, 3, 1) \
-  F(InfoLOL, 2, 1) \
-  F(PrintLOLObj, 1, 1) \
-  F(ResetLOL, 0, 1) \
-  F(SummarizeLOL, 3, 1)
 
 #else
 #define RUNTIME_FUNCTION_LIST_DEBUGGER_SUPPORT(F)

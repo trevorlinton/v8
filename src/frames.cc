@@ -88,14 +88,6 @@ class StackHandlerIterator BASE_EMBEDDED {
 
 
 #define INITIALIZE_SINGLETON(type, field) field##_(this),
-StackFrameIterator::StackFrameIterator()
-    : isolate_(Isolate::Current()),
-      STACK_FRAME_TYPE_LIST(INITIALIZE_SINGLETON)
-      frame_(NULL), handler_(NULL),
-      thread_(isolate_->thread_local_top()),
-      fp_(NULL), sp_(NULL), advance_(&StackFrameIterator::AdvanceWithHandler) {
-  Reset();
-}
 StackFrameIterator::StackFrameIterator(Isolate* isolate)
     : isolate_(isolate),
       STACK_FRAME_TYPE_LIST(INITIALIZE_SINGLETON)
@@ -208,11 +200,6 @@ StackFrame* StackFrameIterator::SingletonFor(StackFrame::Type type) {
 
 
 // -------------------------------------------------------------------------
-
-
-StackTraceFrameIterator::StackTraceFrameIterator() {
-  if (!done() && !IsValidFrame()) Advance();
-}
 
 
 StackTraceFrameIterator::StackTraceFrameIterator(Isolate* isolate)
@@ -643,6 +630,8 @@ void StandardFrame::IterateCompiledFrame(ObjectVisitor* v) const {
 
   // Skip saved double registers.
   if (safepoint_entry.has_doubles()) {
+    // Number of doubles not known at snapshot time.
+    ASSERT(!Serializer::enabled());
     parameters_base += DoubleRegister::NumAllocatableRegisters() *
         kDoubleSize / kPointerSize;
   }
@@ -677,6 +666,13 @@ void StandardFrame::IterateCompiledFrame(ObjectVisitor* v) const {
 
   // Visit the return address in the callee and incoming arguments.
   IteratePc(v, pc_address(), code);
+
+  // Visit the context in stub frame and JavaScript frame.
+  // Visit the function in JavaScript frame.
+  Object** fixed_base = &Memory::Object_at(
+      fp() + StandardFrameConstants::kMarkerOffset);
+  Object** fixed_limit = &Memory::Object_at(fp());
+  v->VisitPointers(fixed_base, fixed_limit);
 }
 
 
@@ -708,12 +704,6 @@ void OptimizedFrame::Iterate(ObjectVisitor* v) const {
 #endif
 
   IterateCompiledFrame(v);
-
-  // Visit the context and the function.
-  Object** fixed_base = &Memory::Object_at(
-      fp() + JavaScriptFrameConstants::kFunctionOffset);
-  Object** fixed_limit = &Memory::Object_at(fp());
-  v->VisitPointers(fixed_base, fixed_limit);
 }
 
 
@@ -781,13 +771,14 @@ void JavaScriptFrame::Summarize(List<FrameSummary>* functions) {
 }
 
 
-void JavaScriptFrame::PrintTop(FILE* file,
+void JavaScriptFrame::PrintTop(Isolate* isolate,
+                               FILE* file,
                                bool print_args,
                                bool print_line_number) {
   // constructor calls
-  HandleScope scope;
+  HandleScope scope(isolate);
   AssertNoAllocation no_allocation;
-  JavaScriptFrameIterator it;
+  JavaScriptFrameIterator it(isolate);
   while (!it.done()) {
     if (it.frame()->is_java_script()) {
       JavaScriptFrame* frame = it.frame();
@@ -1082,7 +1073,7 @@ void StackFrame::PrintIndex(StringStream* accumulator,
 void JavaScriptFrame::Print(StringStream* accumulator,
                             PrintMode mode,
                             int index) const {
-  HandleScope scope;
+  HandleScope scope(isolate());
   Object* receiver = this->receiver();
   Object* function = this->function();
 
@@ -1096,7 +1087,7 @@ void JavaScriptFrame::Print(StringStream* accumulator,
   // doesn't contain scope info, scope_info will return 0 for the number of
   // parameters, stack local variables, context local variables, stack slots,
   // or context slots.
-  Handle<ScopeInfo> scope_info(ScopeInfo::Empty());
+  Handle<ScopeInfo> scope_info(ScopeInfo::Empty(isolate()));
 
   if (function->IsJSFunction()) {
     Handle<SharedFunctionInfo> shared(JSFunction::cast(function)->shared());
@@ -1301,6 +1292,42 @@ void InternalFrame::Iterate(ObjectVisitor* v) const {
 }
 
 
+void StubFailureTrampolineFrame::Iterate(ObjectVisitor* v) const {
+  Object** base = &Memory::Object_at(sp());
+  Object** limit = &Memory::Object_at(fp() +
+                                      kFirstRegisterParameterFrameOffset);
+  v->VisitPointers(base, limit);
+  base = &Memory::Object_at(fp() + StandardFrameConstants::kMarkerOffset);
+  const int offset = StandardFrameConstants::kContextOffset;
+  limit = &Memory::Object_at(fp() + offset) + 1;
+  v->VisitPointers(base, limit);
+  IteratePc(v, pc_address(), LookupCode());
+}
+
+
+Address StubFailureTrampolineFrame::GetCallerStackPointer() const {
+  return fp() + StandardFrameConstants::kCallerSPOffset;
+}
+
+
+Code* StubFailureTrampolineFrame::unchecked_code() const {
+  int i = 0;
+  for (; i <= StubFailureTrampolineStub::kMaxExtraExpressionStackCount; ++i) {
+    Code* trampoline;
+    StubFailureTrampolineStub(i).FindCodeInCache(&trampoline, isolate());
+    ASSERT(trampoline != NULL);
+    Address current_pc = pc();
+    Address code_start = trampoline->instruction_start();
+    Address code_end = code_start + trampoline->instruction_size();
+    if (code_start <= current_pc && current_pc < code_end) {
+      return trampoline;
+    }
+  }
+  UNREACHABLE();
+  return NULL;
+}
+
+
 // -------------------------------------------------------------------------
 
 
@@ -1462,9 +1489,9 @@ static StackFrame* AllocateFrameCopy(StackFrame* frame, Zone* zone) {
   return NULL;
 }
 
-Vector<StackFrame*> CreateStackMap(Zone* zone) {
+Vector<StackFrame*> CreateStackMap(Isolate* isolate, Zone* zone) {
   ZoneList<StackFrame*> list(10, zone);
-  for (StackFrameIterator it; !it.done(); it.Advance()) {
+  for (StackFrameIterator it(isolate); !it.done(); it.Advance()) {
     StackFrame* frame = AllocateFrameCopy(it.frame(), zone);
     list.Add(frame, zone);
   }

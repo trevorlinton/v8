@@ -94,7 +94,7 @@ UnaryMathFunction CreateTranscendentalFunction(TranscendentalCache::Type type) {
 
   CodeDesc desc;
   masm.GetCode(&desc);
-  ASSERT(desc.reloc_size == 0);
+  ASSERT(!RelocInfo::RequiresRelocation(desc));
 
   CPU::FlushICache(buffer, actual_size);
   OS::ProtectCode(buffer, actual_size);
@@ -132,6 +132,7 @@ UnaryMathFunction CreateExpFunction() {
 
   CodeDesc desc;
   masm.GetCode(&desc);
+  ASSERT(!RelocInfo::RequiresRelocation(desc));
 
   CPU::FlushICache(buffer, actual_size);
   OS::ProtectCode(buffer, actual_size);
@@ -164,7 +165,7 @@ UnaryMathFunction CreateSqrtFunction() {
 
   CodeDesc desc;
   masm.GetCode(&desc);
-  ASSERT(desc.reloc_size == 0);
+  ASSERT(!RelocInfo::RequiresRelocation(desc));
 
   CPU::FlushICache(buffer, actual_size);
   OS::ProtectCode(buffer, actual_size);
@@ -374,7 +375,7 @@ OS::MemCopyFunction CreateMemCopyFunction() {
 
   CodeDesc desc;
   masm.GetCode(&desc);
-  ASSERT(desc.reloc_size == 0);
+  ASSERT(!RelocInfo::RequiresRelocation(desc));
 
   CPU::FlushICache(buffer, actual_size);
   OS::ProtectCode(buffer, actual_size);
@@ -388,8 +389,10 @@ OS::MemCopyFunction CreateMemCopyFunction() {
 
 #define __ ACCESS_MASM(masm)
 
+
 void ElementsTransitionGenerator::GenerateMapChangeElementsTransition(
-    MacroAssembler* masm) {
+    MacroAssembler* masm, AllocationSiteMode mode,
+    Label* allocation_site_info_found) {
   // ----------- S t a t e -------------
   //  -- eax    : value
   //  -- ebx    : target map
@@ -397,6 +400,12 @@ void ElementsTransitionGenerator::GenerateMapChangeElementsTransition(
   //  -- edx    : receiver
   //  -- esp[0] : return address
   // -----------------------------------
+  if (mode == TRACK_ALLOCATION_SITE) {
+    ASSERT(allocation_site_info_found != NULL);
+    __ TestJSArrayForAllocationSiteInfo(edx, edi);
+    __ j(equal, allocation_site_info_found);
+  }
+
   // Set transitioned map.
   __ mov(FieldOperand(edx, HeapObject::kMapOffset), ebx);
   __ RecordWriteField(edx,
@@ -410,7 +419,7 @@ void ElementsTransitionGenerator::GenerateMapChangeElementsTransition(
 
 
 void ElementsTransitionGenerator::GenerateSmiToDouble(
-    MacroAssembler* masm, Label* fail) {
+    MacroAssembler* masm, AllocationSiteMode mode, Label* fail) {
   // ----------- S t a t e -------------
   //  -- eax    : value
   //  -- ebx    : target map
@@ -419,6 +428,11 @@ void ElementsTransitionGenerator::GenerateSmiToDouble(
   //  -- esp[0] : return address
   // -----------------------------------
   Label loop, entry, convert_hole, gc_required, only_change_map;
+
+  if (mode == TRACK_ALLOCATION_SITE) {
+    __ TestJSArrayForAllocationSiteInfo(edx, edi);
+    __ j(equal, fail);
+  }
 
   // Check for empty arrays, which only require a map transition and no changes
   // to the backing store.
@@ -545,7 +559,7 @@ void ElementsTransitionGenerator::GenerateSmiToDouble(
 
 
 void ElementsTransitionGenerator::GenerateDoubleToObject(
-    MacroAssembler* masm, Label* fail) {
+    MacroAssembler* masm, AllocationSiteMode mode, Label* fail) {
   // ----------- S t a t e -------------
   //  -- eax    : value
   //  -- ebx    : target map
@@ -554,6 +568,11 @@ void ElementsTransitionGenerator::GenerateDoubleToObject(
   //  -- esp[0] : return address
   // -----------------------------------
   Label loop, entry, convert_hole, gc_required, only_change_map, success;
+
+  if (mode == TRACK_ALLOCATION_SITE) {
+    __ TestJSArrayForAllocationSiteInfo(edx, edi);
+    __ j(equal, fail);
+  }
 
   // Check for empty arrays, which only require a map transition and no changes
   // to the backing store.
@@ -938,7 +957,7 @@ void Code::PatchPlatformCodeAge(byte* sequence,
   } else {
     Code* stub = GetCodeAgeStub(age, parity);
     CodePatcher patcher(sequence, young_length);
-    patcher.masm()->call(stub->instruction_start(), RelocInfo::NONE);
+    patcher.masm()->call(stub->instruction_start(), RelocInfo::NONE32);
   }
 }
 

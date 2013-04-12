@@ -111,14 +111,11 @@ bool TypeFeedbackOracle::LoadIsMonomorphicNormal(Property* expr) {
 }
 
 
-bool TypeFeedbackOracle::LoadIsMegamorphicWithTypeInfo(Property* expr) {
+bool TypeFeedbackOracle::LoadIsPolymorphic(Property* expr) {
   Handle<Object> map_or_code = GetInfo(expr->PropertyFeedbackId());
   if (map_or_code->IsCode()) {
     Handle<Code> code = Handle<Code>::cast(map_or_code);
-    Builtins* builtins = isolate_->builtins();
-    return code->is_keyed_load_stub() &&
-        *code != builtins->builtin(Builtins::kKeyedLoadIC_Generic) &&
-        code->ic_state() == MEGAMORPHIC;
+    return code->is_keyed_load_stub() && code->ic_state() == POLYMORPHIC;
   }
   return false;
 }
@@ -145,19 +142,15 @@ bool TypeFeedbackOracle::StoreIsMonomorphicNormal(TypeFeedbackId ast_id) {
 }
 
 
-bool TypeFeedbackOracle::StoreIsMegamorphicWithTypeInfo(TypeFeedbackId ast_id) {
+bool TypeFeedbackOracle::StoreIsPolymorphic(TypeFeedbackId ast_id) {
   Handle<Object> map_or_code = GetInfo(ast_id);
   if (map_or_code->IsCode()) {
     Handle<Code> code = Handle<Code>::cast(map_or_code);
-    Builtins* builtins = isolate_->builtins();
     bool allow_growth =
         Code::GetKeyedAccessGrowMode(code->extra_ic_state()) ==
         ALLOW_JSARRAY_GROWTH;
-    return code->is_keyed_store_stub() &&
-        !allow_growth &&
-        *code != builtins->builtin(Builtins::kKeyedStoreIC_Generic) &&
-        *code != builtins->builtin(Builtins::kKeyedStoreIC_Generic_Strict) &&
-        code->ic_state() == MEGAMORPHIC;
+    return code->is_keyed_store_stub() && !allow_growth &&
+        code->ic_state() == POLYMORPHIC;
   }
   return false;
 }
@@ -223,8 +216,7 @@ Handle<Map> TypeFeedbackOracle::StoreMonomorphicReceiverType(
 void TypeFeedbackOracle::LoadReceiverTypes(Property* expr,
                                            Handle<String> name,
                                            SmallMapList* types) {
-  Code::Flags flags =
-      Code::ComputeMonomorphicFlags(Code::LOAD_IC, Code::NORMAL);
+  Code::Flags flags = Code::ComputeMonomorphicFlags(Code::LOAD_IC);
   CollectReceiverTypes(expr->PropertyFeedbackId(), name, flags, types);
 }
 
@@ -232,8 +224,7 @@ void TypeFeedbackOracle::LoadReceiverTypes(Property* expr,
 void TypeFeedbackOracle::StoreReceiverTypes(Assignment* expr,
                                             Handle<String> name,
                                             SmallMapList* types) {
-  Code::Flags flags =
-      Code::ComputeMonomorphicFlags(Code::STORE_IC, Code::NORMAL);
+  Code::Flags flags = Code::ComputeMonomorphicFlags(Code::STORE_IC);
   CollectReceiverTypes(expr->AssignmentFeedbackId(), name, flags, types);
 }
 
@@ -250,10 +241,10 @@ void TypeFeedbackOracle::CallReceiverTypes(Call* expr,
       CallIC::Contextual::encode(call_kind == CALL_AS_FUNCTION);
 
   Code::Flags flags = Code::ComputeMonomorphicFlags(Code::CALL_IC,
-                                                    Code::NORMAL,
                                                     extra_ic_state,
-                                                    OWN_MAP,
-                                                    arity);
+                                                    Code::NORMAL,
+                                                    arity,
+                                                    OWN_MAP);
   CollectReceiverTypes(expr->CallFeedbackId(), name, flags, types);
 }
 
@@ -312,6 +303,15 @@ bool TypeFeedbackOracle::LoadIsBuiltin(Property* expr, Builtins::Name id) {
 }
 
 
+bool TypeFeedbackOracle::LoadIsStub(Property* expr, ICStub* stub) {
+  Handle<Object> object = GetInfo(expr->PropertyFeedbackId());
+  if (!object->IsCode()) return false;
+  Handle<Code> code = Handle<Code>::cast(object);
+  if (!code->is_load_stub()) return false;
+  return stub->Describes(*code);
+}
+
+
 static TypeInfo TypeFromCompareType(CompareIC::State state) {
   switch (state) {
     case CompareIC::UNINITIALIZED:
@@ -319,14 +319,14 @@ static TypeInfo TypeFromCompareType(CompareIC::State state) {
       return TypeInfo::Uninitialized();
     case CompareIC::SMI:
       return TypeInfo::Smi();
-    case CompareIC::HEAP_NUMBER:
+    case CompareIC::NUMBER:
       return TypeInfo::Number();
     case CompareIC::SYMBOL:
       return TypeInfo::Symbol();
     case CompareIC::STRING:
       return TypeInfo::String();
     case CompareIC::OBJECT:
-    case CompareIC::KNOWN_OBJECTS:
+    case CompareIC::KNOWN_OBJECT:
       // TODO(kasperl): We really need a type for JS objects here.
       return TypeInfo::NonPrimitive();
     case CompareIC::GENERIC:
@@ -368,7 +368,7 @@ Handle<Map> TypeFeedbackOracle::GetCompareMap(CompareOperation* expr) {
   Handle<Code> code = Handle<Code>::cast(object);
   if (!code->is_compare_ic_stub()) return Handle<Map>::null();
   CompareIC::State state = ICCompareStub::CompareState(code->stub_info());
-  if (state != CompareIC::KNOWN_OBJECTS) {
+  if (state != CompareIC::KNOWN_OBJECT) {
     return Handle<Map>::null();
   }
   Map* first_map = code->FindFirstMap();
@@ -390,7 +390,7 @@ TypeInfo TypeFeedbackOracle::UnaryType(UnaryOperation* expr) {
   switch (type) {
     case UnaryOpIC::SMI:
       return TypeInfo::Smi();
-    case UnaryOpIC::HEAP_NUMBER:
+    case UnaryOpIC::NUMBER:
       return TypeInfo::Double();
     default:
       return unknown;
@@ -404,7 +404,7 @@ static TypeInfo TypeFromBinaryOpType(BinaryOpIC::TypeInfo binary_type) {
     case BinaryOpIC::UNINITIALIZED:  return TypeInfo::Uninitialized();
     case BinaryOpIC::SMI:            return TypeInfo::Smi();
     case BinaryOpIC::INT32:          return TypeInfo::Integer32();
-    case BinaryOpIC::HEAP_NUMBER:    return TypeInfo::Double();
+    case BinaryOpIC::NUMBER:         return TypeInfo::Double();
     case BinaryOpIC::ODDBALL:        return TypeInfo::Unknown();
     case BinaryOpIC::STRING:         return TypeInfo::String();
     case BinaryOpIC::GENERIC:        return TypeInfo::Unknown();
@@ -471,7 +471,7 @@ TypeInfo TypeFeedbackOracle::IncrementType(CountOperation* expr) {
       return TypeInfo::Smi();
     case BinaryOpIC::INT32:
       return TypeInfo::Integer32();
-    case BinaryOpIC::HEAP_NUMBER:
+    case BinaryOpIC::NUMBER:
       return TypeInfo::Double();
     case BinaryOpIC::STRING:
     case BinaryOpIC::GENERIC:
@@ -491,11 +491,10 @@ void TypeFeedbackOracle::CollectReceiverTypes(TypeFeedbackId ast_id,
   Handle<Object> object = GetInfo(ast_id);
   if (object->IsUndefined() || object->IsSmi()) return;
 
-  if (*object ==
-      isolate_->builtins()->builtin(Builtins::kStoreIC_GlobalProxy)) {
+  if (object.is_identical_to(isolate_->builtins()->StoreIC_GlobalProxy())) {
     // TODO(fschneider): We could collect the maps and signal that
     // we need a generic store (or load) here.
-    ASSERT(Handle<Code>::cast(object)->ic_state() == MEGAMORPHIC);
+    ASSERT(Handle<Code>::cast(object)->ic_state() == GENERIC);
   } else if (object->IsMap()) {
     types->Add(Handle<Map>::cast(object), zone());
   } else if (FLAG_collect_megamorphic_maps_from_stub_cache &&
@@ -590,7 +589,7 @@ byte TypeFeedbackOracle::ToBooleanTypes(TypeFeedbackId ast_id) {
 void TypeFeedbackOracle::BuildDictionary(Handle<Code> code) {
   AssertNoAllocation no_allocation;
   ZoneList<RelocInfo> infos(16, zone());
-  HandleScope scope;
+  HandleScope scope(code->GetIsolate());
   GetRelocInfos(code, &infos);
   CreateDictionary(code, &infos);
   ProcessRelocInfos(&infos);
@@ -667,7 +666,7 @@ void TypeFeedbackOracle::ProcessRelocInfos(ZoneList<RelocInfo>* infos) {
       case Code::KEYED_LOAD_IC:
       case Code::KEYED_STORE_IC:
         if (target->ic_state() == MONOMORPHIC ||
-            target->ic_state() == MEGAMORPHIC) {
+            target->ic_state() == POLYMORPHIC) {
           SetInfo(ast_id, target);
         }
         break;

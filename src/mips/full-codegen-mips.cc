@@ -147,7 +147,7 @@ void FullCodeGenerator::Generate() {
 
 #ifdef DEBUG
   if (strlen(FLAG_stop_at) > 0 &&
-      info->function()->name()->IsEqualTo(CStrVector(FLAG_stop_at))) {
+      info->function()->name()->IsUtf8EqualTo(CStrVector(FLAG_stop_at))) {
     __ stop("stop-at");
   }
 #endif
@@ -675,7 +675,7 @@ void FullCodeGenerator::DoTest(Expression* condition,
                                Label* fall_through) {
   if (CpuFeatures::IsSupported(FPU)) {
     ToBooleanStub stub(result_register());
-    __ CallStub(&stub);
+    __ CallStub(&stub, condition->test_id());
     __ mov(at, zero_reg);
   } else {
     // Call the runtime to find the boolean value of the source and then
@@ -1046,7 +1046,7 @@ void FullCodeGenerator::VisitSwitchStatement(SwitchStatement* stmt) {
 
     // Record position before stub call for type feedback.
     SetSourcePosition(clause->position());
-    Handle<Code> ic = CompareIC::GetUninitialized(Token::EQ_STRICT);
+    Handle<Code> ic = CompareIC::GetUninitialized(isolate(), Token::EQ_STRICT);
     CallIC(ic, RelocInfo::CODE_TARGET, clause->CompareId());
     patch_site.EmitPatchInfo();
 
@@ -1171,7 +1171,8 @@ void FullCodeGenerator::VisitForInStatement(ForInStatement* stmt) {
   Handle<JSGlobalPropertyCell> cell =
       isolate()->factory()->NewJSGlobalPropertyCell(
           Handle<Object>(
-              Smi::FromInt(TypeFeedbackCells::kForInFastCaseMarker)));
+              Smi::FromInt(TypeFeedbackCells::kForInFastCaseMarker),
+              isolate()));
   RecordTypeFeedbackCell(stmt->ForInFeedbackId(), cell);
   __ LoadHeapObject(a1, cell);
   __ li(a2, Operand(Smi::FromInt(TypeFeedbackCells::kForInSlowCaseMarker)));
@@ -1730,7 +1731,9 @@ void FullCodeGenerator::VisitArrayLiteral(ArrayLiteral* expr) {
   if (has_fast_elements && constant_elements_values->map() ==
       isolate()->heap()->fixed_cow_array_map()) {
     FastCloneShallowArrayStub stub(
-        FastCloneShallowArrayStub::COPY_ON_WRITE_ELEMENTS, length);
+        FastCloneShallowArrayStub::COPY_ON_WRITE_ELEMENTS,
+        DONT_TRACK_ALLOCATION_SITE,
+        length);
     __ CallStub(&stub);
     __ IncrementCounter(isolate()->counters()->cow_arrays_created_stub(),
         1, a1, a2);
@@ -1741,10 +1744,17 @@ void FullCodeGenerator::VisitArrayLiteral(ArrayLiteral* expr) {
   } else {
     ASSERT(IsFastSmiOrObjectElementsKind(constant_elements_kind) ||
            FLAG_smi_only_arrays);
-    FastCloneShallowArrayStub::Mode mode = has_fast_elements
-      ? FastCloneShallowArrayStub::CLONE_ELEMENTS
-      : FastCloneShallowArrayStub::CLONE_ANY_ELEMENTS;
-    FastCloneShallowArrayStub stub(mode, length);
+    FastCloneShallowArrayStub::Mode mode =
+        FastCloneShallowArrayStub::CLONE_ANY_ELEMENTS;
+    AllocationSiteMode allocation_site_mode = FLAG_track_allocation_sites
+        ? TRACK_ALLOCATION_SITE : DONT_TRACK_ALLOCATION_SITE;
+
+    if (has_fast_elements) {
+      mode = FastCloneShallowArrayStub::CLONE_ELEMENTS;
+      allocation_site_mode = DONT_TRACK_ALLOCATION_SITE;
+    }
+
+    FastCloneShallowArrayStub stub(mode, allocation_site_mode, length);
     __ CallStub(&stub);
   }
 
@@ -1955,7 +1965,7 @@ void FullCodeGenerator::EmitInlineSmiBinaryOp(BinaryOperation* expr,
 
   __ bind(&stub_call);
   BinaryOpStub stub(op, mode);
-  CallIC(stub.GetCode(), RelocInfo::CODE_TARGET,
+  CallIC(stub.GetCode(isolate()), RelocInfo::CODE_TARGET,
          expr->BinaryOperationFeedbackId());
   patch_site.EmitPatchInfo();
   __ jmp(&done);
@@ -2039,7 +2049,7 @@ void FullCodeGenerator::EmitBinaryOp(BinaryOperation* expr,
   __ pop(a1);
   BinaryOpStub stub(op, mode);
   JumpPatchSite patch_site(masm_);    // unbound, signals no inlined smi code.
-  CallIC(stub.GetCode(), RelocInfo::CODE_TARGET,
+  CallIC(stub.GetCode(isolate()), RelocInfo::CODE_TARGET,
          expr->BinaryOperationFeedbackId());
   patch_site.EmitPatchInfo();
   context()->Plug(v0);
@@ -2353,7 +2363,7 @@ void FullCodeGenerator::EmitCallWithStub(Call* expr, CallFunctionFlags flags) {
 
   CallFunctionStub stub(arg_count, flags);
   __ lw(a1, MemOperand(sp, (arg_count + 1) * kPointerSize));
-  __ CallStub(&stub);
+  __ CallStub(&stub, expr->CallFeedbackId());
   RecordJSReturnSite(expr);
   // Restore context register.
   __ lw(cp, MemOperand(fp, StandardFrameConstants::kContextOffset));
@@ -2547,7 +2557,7 @@ void FullCodeGenerator::VisitCallNew(CallNew* expr) {
   __ li(a2, Operand(cell));
 
   CallConstructStub stub(RECORD_CALL_TARGET);
-  __ Call(stub.GetCode(), RelocInfo::CONSTRUCT_CALL);
+  __ Call(stub.GetCode(isolate()), RelocInfo::CONSTRUCT_CALL);
   PrepareForBailoutForId(expr->ReturnId(), TOS_REG);
   context()->Plug(v0);
 }
@@ -4033,7 +4043,7 @@ void FullCodeGenerator::EmitUnaryOperation(UnaryOperation* expr,
   VisitForAccumulatorValue(expr->expression());
   SetSourcePosition(expr->position());
   __ mov(a0, result_register());
-  CallIC(stub.GetCode(), RelocInfo::CODE_TARGET,
+  CallIC(stub.GetCode(isolate()), RelocInfo::CODE_TARGET,
          expr->UnaryOperationFeedbackId());
   context()->Plug(v0);
 }
@@ -4146,7 +4156,9 @@ void FullCodeGenerator::VisitCountOperation(CountOperation* expr) {
   SetSourcePosition(expr->position());
 
   BinaryOpStub stub(Token::ADD, NO_OVERWRITE);
-  CallIC(stub.GetCode(), RelocInfo::CODE_TARGET, expr->CountBinOpFeedbackId());
+  CallIC(stub.GetCode(isolate()),
+         RelocInfo::CODE_TARGET,
+         expr->CountBinOpFeedbackId());
   patch_site.EmitPatchInfo();
   __ bind(&done);
 
@@ -4378,7 +4390,7 @@ void FullCodeGenerator::VisitCompareOperation(CompareOperation* expr) {
       }
       // Record position and call the compare IC.
       SetSourcePosition(expr->position());
-      Handle<Code> ic = CompareIC::GetUninitialized(op);
+      Handle<Code> ic = CompareIC::GetUninitialized(isolate(), op);
       CallIC(ic, RelocInfo::CODE_TARGET, expr->CompareOperationFeedbackId());
       patch_site.EmitPatchInfo();
       PrepareForBailoutBeforeSplit(expr, true, if_true, if_false);

@@ -127,7 +127,7 @@ void FullCodeGenerator::Generate() {
 
 #ifdef DEBUG
   if (strlen(FLAG_stop_at) > 0 &&
-      info->function()->name()->IsEqualTo(CStrVector(FLAG_stop_at))) {
+      info->function()->name()->IsUtf8EqualTo(CStrVector(FLAG_stop_at))) {
     __ int3();
   }
 #endif
@@ -1007,7 +1007,7 @@ void FullCodeGenerator::VisitSwitchStatement(SwitchStatement* stmt) {
 
     // Record position before stub call for type feedback.
     SetSourcePosition(clause->position());
-    Handle<Code> ic = CompareIC::GetUninitialized(Token::EQ_STRICT);
+    Handle<Code> ic = CompareIC::GetUninitialized(isolate(), Token::EQ_STRICT);
     CallIC(ic, RelocInfo::CODE_TARGET, clause->CompareId());
     patch_site.EmitPatchInfo();
 
@@ -1135,7 +1135,8 @@ void FullCodeGenerator::VisitForInStatement(ForInStatement* stmt) {
   Handle<JSGlobalPropertyCell> cell =
       isolate()->factory()->NewJSGlobalPropertyCell(
           Handle<Object>(
-              Smi::FromInt(TypeFeedbackCells::kForInFastCaseMarker)));
+              Smi::FromInt(TypeFeedbackCells::kForInFastCaseMarker),
+              isolate()));
   RecordTypeFeedbackCell(stmt->ForInFeedbackId(), cell);
   __ LoadHeapObject(rbx, cell);
   __ Move(FieldOperand(rbx, JSGlobalPropertyCell::kValueOffset),
@@ -1551,24 +1552,34 @@ void FullCodeGenerator::EmitAccessor(Expression* expression) {
 void FullCodeGenerator::VisitObjectLiteral(ObjectLiteral* expr) {
   Comment cmnt(masm_, "[ ObjectLiteral");
   Handle<FixedArray> constant_properties = expr->constant_properties();
-  __ movq(rdi, Operand(rbp, JavaScriptFrameConstants::kFunctionOffset));
-  __ push(FieldOperand(rdi, JSFunction::kLiteralsOffset));
-  __ Push(Smi::FromInt(expr->literal_index()));
-  __ Push(constant_properties);
   int flags = expr->fast_elements()
       ? ObjectLiteral::kFastElements
       : ObjectLiteral::kNoFlags;
   flags |= expr->has_function()
       ? ObjectLiteral::kHasFunction
       : ObjectLiteral::kNoFlags;
-  __ Push(Smi::FromInt(flags));
   int properties_count = constant_properties->length() / 2;
   if (expr->depth() > 1) {
+    __ movq(rdi, Operand(rbp, JavaScriptFrameConstants::kFunctionOffset));
+    __ push(FieldOperand(rdi, JSFunction::kLiteralsOffset));
+    __ Push(Smi::FromInt(expr->literal_index()));
+    __ Push(constant_properties);
+    __ Push(Smi::FromInt(flags));
     __ CallRuntime(Runtime::kCreateObjectLiteral, 4);
-  } else if (flags != ObjectLiteral::kFastElements ||
+  } else if (Serializer::enabled() || flags != ObjectLiteral::kFastElements ||
       properties_count > FastCloneShallowObjectStub::kMaximumClonedProperties) {
+    __ movq(rdi, Operand(rbp, JavaScriptFrameConstants::kFunctionOffset));
+    __ push(FieldOperand(rdi, JSFunction::kLiteralsOffset));
+    __ Push(Smi::FromInt(expr->literal_index()));
+    __ Push(constant_properties);
+    __ Push(Smi::FromInt(flags));
     __ CallRuntime(Runtime::kCreateObjectLiteralShallow, 4);
   } else {
+    __ movq(rdi, Operand(rbp, JavaScriptFrameConstants::kFunctionOffset));
+    __ movq(rax, FieldOperand(rdi, JSFunction::kLiteralsOffset));
+    __ Move(rbx, Smi::FromInt(expr->literal_index()));
+    __ Move(rcx, constant_properties);
+    __ Move(rdx, Smi::FromInt(flags));
     FastCloneShallowObjectStub stub(properties_count);
     __ CallStub(&stub);
   }
@@ -1689,6 +1700,7 @@ void FullCodeGenerator::VisitArrayLiteral(ArrayLiteral* expr) {
     __ IncrementCounter(isolate()->counters()->cow_arrays_created_stub(), 1);
     FastCloneShallowArrayStub stub(
         FastCloneShallowArrayStub::COPY_ON_WRITE_ELEMENTS,
+        DONT_TRACK_ALLOCATION_SITE,
         length);
     __ CallStub(&stub);
   } else if (expr->depth() > 1) {
@@ -1698,12 +1710,19 @@ void FullCodeGenerator::VisitArrayLiteral(ArrayLiteral* expr) {
   } else {
     ASSERT(IsFastSmiOrObjectElementsKind(constant_elements_kind) ||
            FLAG_smi_only_arrays);
+    FastCloneShallowArrayStub::Mode mode =
+        FastCloneShallowArrayStub::CLONE_ANY_ELEMENTS;
+    AllocationSiteMode allocation_site_mode = FLAG_track_allocation_sites
+        ? TRACK_ALLOCATION_SITE : DONT_TRACK_ALLOCATION_SITE;
+
     // If the elements are already FAST_*_ELEMENTS, the boilerplate cannot
     // change, so it's possible to specialize the stub in advance.
-    FastCloneShallowArrayStub::Mode mode = has_constant_fast_elements
-        ? FastCloneShallowArrayStub::CLONE_ELEMENTS
-        : FastCloneShallowArrayStub::CLONE_ANY_ELEMENTS;
-    FastCloneShallowArrayStub stub(mode, length);
+    if (has_constant_fast_elements) {
+      mode = FastCloneShallowArrayStub::CLONE_ELEMENTS;
+      allocation_site_mode = DONT_TRACK_ALLOCATION_SITE;
+    }
+
+    FastCloneShallowArrayStub stub(mode, allocation_site_mode, length);
     __ CallStub(&stub);
   }
 
@@ -1907,7 +1926,7 @@ void FullCodeGenerator::EmitInlineSmiBinaryOp(BinaryOperation* expr,
   __ bind(&stub_call);
   __ movq(rax, rcx);
   BinaryOpStub stub(op, mode);
-  CallIC(stub.GetCode(), RelocInfo::CODE_TARGET,
+  CallIC(stub.GetCode(isolate()), RelocInfo::CODE_TARGET,
          expr->BinaryOperationFeedbackId());
   patch_site.EmitPatchInfo();
   __ jmp(&done, Label::kNear);
@@ -1957,7 +1976,7 @@ void FullCodeGenerator::EmitBinaryOp(BinaryOperation* expr,
   __ pop(rdx);
   BinaryOpStub stub(op, mode);
   JumpPatchSite patch_site(masm_);    // unbound, signals no inlined smi code.
-  CallIC(stub.GetCode(), RelocInfo::CODE_TARGET,
+  CallIC(stub.GetCode(isolate()), RelocInfo::CODE_TARGET,
          expr->BinaryOperationFeedbackId());
   patch_site.EmitPatchInfo();
   context()->Plug(rax);
@@ -2438,7 +2457,7 @@ void FullCodeGenerator::VisitCallNew(CallNew* expr) {
   __ Move(rbx, cell);
 
   CallConstructStub stub(RECORD_CALL_TARGET);
-  __ Call(stub.GetCode(), RelocInfo::CONSTRUCT_CALL);
+  __ Call(stub.GetCode(isolate()), RelocInfo::CONSTRUCT_CALL);
   PrepareForBailoutForId(expr->ReturnId(), TOS_REG);
   context()->Plug(rax);
 }
@@ -3971,7 +3990,7 @@ void FullCodeGenerator::EmitUnaryOperation(UnaryOperation* expr,
   // accumulator register rax.
   VisitForAccumulatorValue(expr->expression());
   SetSourcePosition(expr->position());
-  CallIC(stub.GetCode(), RelocInfo::CODE_TARGET,
+  CallIC(stub.GetCode(isolate()), RelocInfo::CODE_TARGET,
          expr->UnaryOperationFeedbackId());
   context()->Plug(rax);
 }
@@ -4089,7 +4108,9 @@ void FullCodeGenerator::VisitCountOperation(CountOperation* expr) {
   __ movq(rdx, rax);
   __ Move(rax, Smi::FromInt(1));
   BinaryOpStub stub(expr->binary_op(), NO_OVERWRITE);
-  CallIC(stub.GetCode(), RelocInfo::CODE_TARGET, expr->CountBinOpFeedbackId());
+  CallIC(stub.GetCode(isolate()),
+         RelocInfo::CODE_TARGET,
+         expr->CountBinOpFeedbackId());
   patch_site.EmitPatchInfo();
   __ bind(&done);
 
@@ -4324,7 +4345,7 @@ void FullCodeGenerator::VisitCompareOperation(CompareOperation* expr) {
 
       // Record position and call the compare IC.
       SetSourcePosition(expr->position());
-      Handle<Code> ic = CompareIC::GetUninitialized(op);
+      Handle<Code> ic = CompareIC::GetUninitialized(isolate(), op);
       CallIC(ic, RelocInfo::CODE_TARGET, expr->CompareOperationFeedbackId());
       patch_site.EmitPatchInfo();
 

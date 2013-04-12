@@ -30,6 +30,7 @@
 #include "cctest.h"
 
 using namespace v8;
+namespace i = v8::internal;
 
 namespace {
 // Need to create a new isolate when FLAG_harmony_observation is on.
@@ -324,7 +325,7 @@ TEST(APITestBasicMutation) {
       "function observer(r) { [].push.apply(records, r); };"
       "Object.observe(obj, observer);"
       "obj"));
-  obj->Set(String::New("foo"), Number::New(1));
+  obj->Set(String::New("foo"), Number::New(7));
   obj->Set(1, Number::New(2));
   // ForceSet should work just as well as Set
   obj->ForceSet(String::New("foo"), Number::New(3));
@@ -344,7 +345,9 @@ TEST(APITestBasicMutation) {
   const RecordExpectation expected_records[] = {
     { obj, "new", "foo", Handle<Value>() },
     { obj, "new", "1", Handle<Value>() },
-    { obj, "updated", "foo", Number::New(1) },
+    // Note: use 7 not 1 below, as the latter triggers a nifty VS10 compiler bug
+    // where instead of 1.0, a garbage value would be passed into Number::New.
+    { obj, "updated", "foo", Number::New(7) },
     { obj, "updated", "1", Number::New(2) },
     { obj, "updated", "1", Number::New(4) },
     { obj, "new", "1.1", Handle<Value>() },
@@ -396,4 +399,38 @@ TEST(HiddenPrototypeObservation) {
     // { proto, "updated", "foo", Number::New(43) }
   };
   EXPECT_RECORDS(CompileRun("records"), expected_records3);
+}
+
+
+static int NumberOfElements(i::Handle<i::JSWeakMap> map) {
+  return i::ObjectHashTable::cast(map->table())->NumberOfElements();
+}
+
+
+TEST(ObservationWeakMap) {
+  HarmonyIsolate isolate;
+  HandleScope scope;
+  LocalContext context;
+  CompileRun(
+      "var obj = {};"
+      "Object.observe(obj, function(){});"
+      "Object.getNotifier(obj);"
+      "obj = null;");
+  i::Handle<i::JSObject> observation_state = FACTORY->observation_state();
+  i::Handle<i::JSWeakMap> observerInfoMap =
+      i::Handle<i::JSWeakMap>::cast(
+          i::GetProperty(observation_state, "observerInfoMap"));
+  i::Handle<i::JSWeakMap> objectInfoMap =
+      i::Handle<i::JSWeakMap>::cast(
+          i::GetProperty(observation_state, "objectInfoMap"));
+  i::Handle<i::JSWeakMap> notifierTargetMap =
+      i::Handle<i::JSWeakMap>::cast(
+          i::GetProperty(observation_state, "notifierTargetMap"));
+  CHECK_EQ(1, NumberOfElements(observerInfoMap));
+  CHECK_EQ(1, NumberOfElements(objectInfoMap));
+  CHECK_EQ(1, NumberOfElements(notifierTargetMap));
+  HEAP->CollectAllGarbage(i::Heap::kAbortIncrementalMarkingMask);
+  CHECK_EQ(0, NumberOfElements(observerInfoMap));
+  CHECK_EQ(0, NumberOfElements(objectInfoMap));
+  CHECK_EQ(0, NumberOfElements(notifierTargetMap));
 }

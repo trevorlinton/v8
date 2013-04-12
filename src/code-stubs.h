@@ -47,6 +47,10 @@ namespace internal {
   V(Compare)                             \
   V(CompareIC)                           \
   V(MathPow)                             \
+  V(ArrayLength)                         \
+  V(StringLength)                        \
+  V(FunctionPrototype)                   \
+  V(StoreArrayLength)                    \
   V(RecordWrite)                         \
   V(StoreBufferOverflow)                 \
   V(RegExpExec)                          \
@@ -73,7 +77,9 @@ namespace internal {
   V(DebuggerStatement)                   \
   V(StringDictionaryLookup)              \
   V(ElementsTransitionAndStore)          \
+  V(TransitionElementsKind)              \
   V(StoreArrayLiteralElement)            \
+  V(StubFailureTrampoline)               \
   V(ProfileEntryHook)
 
 // List of code stubs only used on ARM platforms.
@@ -120,7 +126,7 @@ class CodeStub BASE_EMBEDDED {
   };
 
   // Retrieve the code for the stub. Generate the code if needed.
-  Handle<Code> GetCode();
+  Handle<Code> GetCode(Isolate* isolate);
 
   static Major MajorKeyFromKey(uint32_t key) {
     return static_cast<Major>(MajorKeyBits::decode(key));
@@ -148,8 +154,8 @@ class CodeStub BASE_EMBEDDED {
   // See comment above, where Instanceof is defined.
   virtual bool IsPregenerated() { return false; }
 
-  static void GenerateStubsAheadOfTime();
-  static void GenerateFPStubs();
+  static void GenerateStubsAheadOfTime(Isolate* isolate);
+  static void GenerateFPStubs(Isolate* isolate);
 
   // Some stubs put untagged junk on the stack that cannot be scanned by the
   // GC.  This means that we must be statically sure that no GC can occur while
@@ -175,6 +181,9 @@ class CodeStub BASE_EMBEDDED {
   // BinaryOpStub needs to override this.
   virtual InlineCacheState GetICState() {
     return UNINITIALIZED;
+  }
+  virtual Code::ExtraICState GetExtraICState() {
+    return Code::kNoExtraICState;
   }
 
   // Returns whether the code generated for this stub needs to be allocated as
@@ -244,15 +253,17 @@ class PlatformCodeStub : public CodeStub {
 struct CodeStubInterfaceDescriptor {
   CodeStubInterfaceDescriptor()
       : register_param_count_(-1),
+        stack_parameter_count_(NULL),
+        extra_expression_stack_count_(0),
         register_params_(NULL) { }
   int register_param_count_;
+  const Register* stack_parameter_count_;
+  int extra_expression_stack_count_;
   Register* register_params_;
-  Handle<Code> deoptimization_handler_;
+  Address deoptimization_handler_;
 };
 
 
-class HGraph;
-struct Register;
 class HydrogenCodeStub : public CodeStub {
  public:
   // Retrieve the code for the stub. Generate the code if needed.
@@ -267,9 +278,6 @@ class HydrogenCodeStub : public CodeStub {
   virtual void InitializeInterfaceDescriptor(
       Isolate* isolate,
       CodeStubInterfaceDescriptor* descriptor) = 0;
-
- protected:
-  Handle<Code> CodeFromGraph(HGraph* graph);
 };
 
 
@@ -422,16 +430,21 @@ class FastCloneShallowArrayStub : public PlatformCodeStub {
  public:
   // Maximum length of copied elements array.
   static const int kMaximumClonedLength = 8;
-
   enum Mode {
     CLONE_ELEMENTS,
     CLONE_DOUBLE_ELEMENTS,
     COPY_ON_WRITE_ELEMENTS,
-    CLONE_ANY_ELEMENTS
+    CLONE_ANY_ELEMENTS,
+    LAST_CLONE_MODE = CLONE_ANY_ELEMENTS
   };
 
-  FastCloneShallowArrayStub(Mode mode, int length)
+  static const int kFastCloneModeCount = LAST_CLONE_MODE + 1;
+
+  FastCloneShallowArrayStub(Mode mode,
+                            AllocationSiteMode allocation_site_mode,
+                            int length)
       : mode_(mode),
+        allocation_site_mode_(allocation_site_mode),
         length_((mode == COPY_ON_WRITE_ELEMENTS) ? 0 : length) {
     ASSERT_GE(length_, 0);
     ASSERT_LE(length_, kMaximumClonedLength);
@@ -441,17 +454,26 @@ class FastCloneShallowArrayStub : public PlatformCodeStub {
 
  private:
   Mode mode_;
+  AllocationSiteMode allocation_site_mode_;
   int length_;
 
+  class AllocationSiteModeBits: public BitField<AllocationSiteMode, 0, 1> {};
+  class ModeBits: public BitField<Mode, 1, 4> {};
+  class LengthBits: public BitField<int, 5, 4> {};
+  // Ensure data fits within available bits.
+  STATIC_ASSERT(LAST_ALLOCATION_SITE_MODE == 1);
+  STATIC_ASSERT(kFastCloneModeCount < 16);
+  STATIC_ASSERT(kMaximumClonedLength < 16);
   Major MajorKey() { return FastCloneShallowArray; }
   int MinorKey() {
-    ASSERT(mode_ == 0 || mode_ == 1 || mode_ == 2 || mode_ == 3);
-    return length_ * 4 +  mode_;
+    return AllocationSiteModeBits::encode(allocation_site_mode_)
+        | ModeBits::encode(mode_)
+        | LengthBits::encode(length_);
   }
 };
 
 
-class FastCloneShallowObjectStub : public PlatformCodeStub {
+class FastCloneShallowObjectStub : public HydrogenCodeStub {
  public:
   // Maximum number of properties in copied object.
   static const int kMaximumClonedProperties = 6;
@@ -461,13 +483,21 @@ class FastCloneShallowObjectStub : public PlatformCodeStub {
     ASSERT_LE(length_, kMaximumClonedProperties);
   }
 
-  void Generate(MacroAssembler* masm);
+  int length() const { return length_; }
+
+  virtual Handle<Code> GenerateCode();
+
+  virtual void InitializeInterfaceDescriptor(
+      Isolate* isolate,
+      CodeStubInterfaceDescriptor* descriptor);
 
  private:
   int length_;
 
   Major MajorKey() { return FastCloneShallowObject; }
   int MinorKey() { return length_; }
+
+  DISALLOW_COPY_AND_ASSIGN(FastCloneShallowObjectStub);
 };
 
 
@@ -522,6 +552,100 @@ class MathPowStub: public PlatformCodeStub {
   virtual int MinorKey() { return exponent_type_; }
 
   ExponentType exponent_type_;
+};
+
+
+class ICStub: public PlatformCodeStub {
+ public:
+  explicit ICStub(Code::Kind kind) : kind_(kind) { }
+  virtual int GetCodeKind() { return kind_; }
+  virtual InlineCacheState GetICState() { return MONOMORPHIC; }
+
+  bool Describes(Code* code) {
+    return GetMajorKey(code) == MajorKey() && code->stub_info() == MinorKey();
+  }
+
+ protected:
+  class KindBits: public BitField<Code::Kind, 0, 4> {};
+  virtual void FinishCode(Handle<Code> code) {
+    code->set_stub_info(MinorKey());
+  }
+  Code::Kind kind() { return kind_; }
+
+  virtual int MinorKey() {
+    return KindBits::encode(kind_);
+  }
+
+ private:
+  Code::Kind kind_;
+};
+
+
+class ArrayLengthStub: public ICStub {
+ public:
+  explicit ArrayLengthStub(Code::Kind kind) : ICStub(kind) { }
+  virtual void Generate(MacroAssembler* masm);
+
+ private:
+  virtual CodeStub::Major MajorKey() { return ArrayLength; }
+};
+
+
+class FunctionPrototypeStub: public ICStub {
+ public:
+  explicit FunctionPrototypeStub(Code::Kind kind) : ICStub(kind) { }
+  virtual void Generate(MacroAssembler* masm);
+
+ private:
+  virtual CodeStub::Major MajorKey() { return FunctionPrototype; }
+};
+
+
+class StringLengthStub: public ICStub {
+ public:
+  StringLengthStub(Code::Kind kind, bool support_wrapper)
+      : ICStub(kind), support_wrapper_(support_wrapper) { }
+  virtual void Generate(MacroAssembler* masm);
+
+ private:
+  class WrapperModeBits: public BitField<bool, 4, 1> {};
+  virtual CodeStub::Major MajorKey() { return StringLength; }
+  virtual int MinorKey() {
+    return KindBits::encode(kind()) | WrapperModeBits::encode(support_wrapper_);
+  }
+
+  bool support_wrapper_;
+};
+
+
+class StoreICStub: public ICStub {
+ public:
+  StoreICStub(Code::Kind kind, StrictModeFlag strict_mode)
+      : ICStub(kind), strict_mode_(strict_mode) { }
+
+ protected:
+  virtual Code::ExtraICState GetExtraICState() {
+    return strict_mode_;
+  }
+
+ private:
+  class StrictModeBits: public BitField<bool, 4, 1> {};
+  virtual int MinorKey() {
+    return KindBits::encode(kind()) | StrictModeBits::encode(strict_mode_);
+  }
+
+  StrictModeFlag strict_mode_;
+};
+
+
+class StoreArrayLengthStub: public StoreICStub {
+ public:
+  explicit StoreArrayLengthStub(Code::Kind kind, StrictModeFlag strict_mode)
+      : StoreICStub(kind, strict_mode) { }
+  virtual void Generate(MacroAssembler* masm);
+
+ private:
+  virtual CodeStub::Major MajorKey() { return StoreArrayLength; }
 };
 
 
@@ -612,7 +736,7 @@ class BinaryOpStub: public PlatformCodeStub {
   void GenerateBothStringStub(MacroAssembler* masm);
   void GenerateGeneric(MacroAssembler* masm);
   void GenerateGenericStub(MacroAssembler* masm);
-  void GenerateHeapNumberStub(MacroAssembler* masm);
+  void GenerateNumberStub(MacroAssembler* masm);
   void GenerateInt32Stub(MacroAssembler* masm);
   void GenerateLoadArguments(MacroAssembler* masm);
   void GenerateOddballStub(MacroAssembler* masm);
@@ -684,7 +808,7 @@ class ICCompareStub: public PlatformCodeStub {
   virtual int GetCodeKind() { return Code::COMPARE_IC; }
 
   void GenerateSmis(MacroAssembler* masm);
-  void GenerateHeapNumbers(MacroAssembler* masm);
+  void GenerateNumbers(MacroAssembler* masm);
   void GenerateSymbols(MacroAssembler* masm);
   void GenerateStrings(MacroAssembler* masm);
   void GenerateObjects(MacroAssembler* masm);
@@ -697,7 +821,7 @@ class ICCompareStub: public PlatformCodeStub {
 
   virtual void AddToSpecialCache(Handle<Code> new_object);
   virtual bool FindCodeInSpecialCache(Code** code_out, Isolate* isolate);
-  virtual bool UseSpecialCache() { return state_ == CompareIC::KNOWN_OBJECTS; }
+  virtual bool UseSpecialCache() { return state_ == CompareIC::KNOWN_OBJECT; }
 
   Token::Value op_;
   CompareIC::State left_;
@@ -720,7 +844,7 @@ class CEntryStub : public PlatformCodeStub {
   // their code generation.  On machines that always have gp registers (x64) we
   // can generate both variants ahead of time.
   virtual bool IsPregenerated();
-  static void GenerateAheadOfTime();
+  static void GenerateAheadOfTime(Isolate* isolate);
 
  private:
   void GenerateCore(MacroAssembler* masm,
@@ -942,6 +1066,13 @@ class StringCharCodeAtGenerator {
   void GenerateSlow(MacroAssembler* masm,
                     const RuntimeCallHelper& call_helper);
 
+  // Skip handling slow case and directly jump to bailout.
+  void SkipSlow(MacroAssembler* masm, Label* bailout) {
+    masm->bind(&index_not_smi_);
+    masm->bind(&call_runtime_);
+    masm->jmp(bailout);
+  }
+
  private:
   Register object_;
   Register index_;
@@ -981,6 +1112,12 @@ class StringCharFromCodeGenerator {
   // deferred code). Always jumps back to the fast case.
   void GenerateSlow(MacroAssembler* masm,
                     const RuntimeCallHelper& call_helper);
+
+  // Skip handling slow case and directly jump to bailout.
+  void SkipSlow(MacroAssembler* masm, Label* bailout) {
+    masm->bind(&slow_case_);
+    masm->jmp(bailout);
+  }
 
  private:
   Register code_;
@@ -1024,13 +1161,25 @@ class StringCharAtGenerator {
 
   // Generates the fast case code. On the fallthrough path |result|
   // register contains the result.
-  void GenerateFast(MacroAssembler* masm);
+  void GenerateFast(MacroAssembler* masm) {
+    char_code_at_generator_.GenerateFast(masm);
+    char_from_code_generator_.GenerateFast(masm);
+  }
 
   // Generates the slow case code. Must not be naturally
   // reachable. Expected to be put after a ret instruction (e.g., in
   // deferred code). Always jumps back to the fast case.
   void GenerateSlow(MacroAssembler* masm,
-                    const RuntimeCallHelper& call_helper);
+                    const RuntimeCallHelper& call_helper) {
+    char_code_at_generator_.GenerateSlow(masm, call_helper);
+    char_from_code_generator_.GenerateSlow(masm, call_helper);
+  }
+
+  // Skip handling slow case and directly jump to bailout.
+  void SkipSlow(MacroAssembler* masm, Label* bailout) {
+    char_code_at_generator_.SkipSlow(masm, bailout);
+    char_from_code_generator_.SkipSlow(masm, bailout);
+  }
 
  private:
   StringCharCodeAtGenerator char_code_at_generator_;
@@ -1079,9 +1228,6 @@ class KeyedLoadFastElementStub : public HydrogenCodeStub {
         IsJSArrayBits::encode(is_js_array);
   }
 
-  Major MajorKey() { return KeyedLoadElement; }
-  int MinorKey() { return bit_field_; }
-
   bool is_js_array() const {
     return IsJSArrayBits::decode(bit_field_);
   }
@@ -1101,7 +1247,44 @@ class KeyedLoadFastElementStub : public HydrogenCodeStub {
   class ElementsKindBits: public BitField<ElementsKind, 0, 8> {};
   uint32_t bit_field_;
 
+  Major MajorKey() { return KeyedLoadElement; }
+  int MinorKey() { return bit_field_; }
+
   DISALLOW_COPY_AND_ASSIGN(KeyedLoadFastElementStub);
+};
+
+
+class TransitionElementsKindStub : public HydrogenCodeStub {
+ public:
+  TransitionElementsKindStub(ElementsKind from_kind,
+                             ElementsKind to_kind) {
+    bit_field_ = FromKindBits::encode(from_kind) |
+        ToKindBits::encode(to_kind);
+  }
+
+  ElementsKind from_kind() const {
+    return FromKindBits::decode(bit_field_);
+  }
+
+  ElementsKind to_kind() const {
+    return ToKindBits::decode(bit_field_);
+  }
+
+  virtual Handle<Code> GenerateCode();
+
+  virtual void InitializeInterfaceDescriptor(
+      Isolate* isolate,
+      CodeStubInterfaceDescriptor* descriptor);
+
+ private:
+  class FromKindBits: public BitField<ElementsKind, 8, 8> {};
+  class ToKindBits: public BitField<ElementsKind, 0, 8> {};
+  uint32_t bit_field_;
+
+  Major MajorKey() { return TransitionElementsKind; }
+  int MinorKey() { return bit_field_; }
+
+  DISALLOW_COPY_AND_ASSIGN(TransitionElementsKindStub);
 };
 
 
@@ -1267,6 +1450,29 @@ class StoreArrayLiteralElementStub : public PlatformCodeStub {
   bool fp_registers_;
 
   DISALLOW_COPY_AND_ASSIGN(StoreArrayLiteralElementStub);
+};
+
+
+class StubFailureTrampolineStub : public PlatformCodeStub {
+ public:
+  static const int kMaxExtraExpressionStackCount = 1;
+
+  explicit StubFailureTrampolineStub(int extra_expression_stack_count)
+      : extra_expression_stack_count_(extra_expression_stack_count) {}
+
+  virtual bool IsPregenerated() { return true; }
+
+  static void GenerateAheadOfTime(Isolate* isolate);
+
+ private:
+  Major MajorKey() { return StubFailureTrampoline; }
+  int MinorKey() { return extra_expression_stack_count_; }
+
+  void Generate(MacroAssembler* masm);
+
+  int extra_expression_stack_count_;
+
+  DISALLOW_COPY_AND_ASSIGN(StubFailureTrampolineStub);
 };
 
 

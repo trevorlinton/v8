@@ -170,7 +170,7 @@ void MacroAssembler::LoadUint32(XMMRegister dst,
   Label done;
   cmp(src, Immediate(0));
   movdbl(scratch,
-         Operand(reinterpret_cast<int32_t>(&kUint32Bias), RelocInfo::NONE));
+         Operand(reinterpret_cast<int32_t>(&kUint32Bias), RelocInfo::NONE32));
   cvtsi2sd(dst, src);
   j(not_sign, &done, Label::kNear);
   addsd(dst, scratch);
@@ -385,7 +385,7 @@ void MacroAssembler::DebugBreak() {
   Set(eax, Immediate(0));
   mov(ebx, Immediate(ExternalReference(Runtime::kDebugBreak, isolate())));
   CEntryStub ces(1);
-  call(ces.GetCode(), RelocInfo::DEBUG_BREAK);
+  call(ces.GetCode(isolate()), RelocInfo::DEBUG_BREAK);
 }
 #endif
 
@@ -1386,8 +1386,7 @@ void MacroAssembler::AllocateInNewSpace(Register object_size,
                                         Register scratch,
                                         Label* gc_required,
                                         AllocationFlags flags) {
-  ASSERT((flags & (DOUBLE_ALIGNMENT | RESULT_CONTAINS_TOP |
-                   SIZE_IN_WORDS)) == 0);
+  ASSERT((flags & (RESULT_CONTAINS_TOP | SIZE_IN_WORDS)) == 0);
   if (!FLAG_inline_new) {
     if (emit_debug_code()) {
       // Trash the registers to simulate an allocation failure.
@@ -1406,6 +1405,19 @@ void MacroAssembler::AllocateInNewSpace(Register object_size,
   // Load address of new object into result.
   LoadAllocationTopHelper(result, scratch, flags);
 
+  // Align the next allocation. Storing the filler map without checking top is
+  // always safe because the limit of the heap is always aligned.
+  if ((flags & DOUBLE_ALIGNMENT) != 0) {
+    ASSERT(kPointerAlignment * 2 == kDoubleAlignment);
+    Label aligned;
+    test(result, Immediate(kDoubleAlignmentMask));
+    j(zero, &aligned, Label::kNear);
+    mov(Operand(result, 0),
+        Immediate(isolate()->factory()->one_pointer_filler_map()));
+    add(result, Immediate(kDoubleSize / 2));
+    bind(&aligned);
+  }
+
   // Calculate new top and bail out if new space is exhausted.
   ExternalReference new_space_allocation_limit =
       ExternalReference::new_space_allocation_limit_address(isolate());
@@ -1419,7 +1431,8 @@ void MacroAssembler::AllocateInNewSpace(Register object_size,
 
   // Tag result if requested.
   if ((flags & TAG_OBJECT) != 0) {
-    lea(result, Operand(result, kHeapObjectTag));
+    ASSERT(kHeapObjectTag == 1);
+    inc(result);
   }
 
   // Update allocation top.
@@ -1789,13 +1802,13 @@ void MacroAssembler::TryGetFunctionPrototype(Register function,
 
 void MacroAssembler::CallStub(CodeStub* stub, TypeFeedbackId ast_id) {
   ASSERT(AllowThisStubCall(stub));  // Calls are not allowed in some stubs.
-  call(stub->GetCode(), RelocInfo::CODE_TARGET, ast_id);
+  call(stub->GetCode(isolate()), RelocInfo::CODE_TARGET, ast_id);
 }
 
 
 void MacroAssembler::TailCallStub(CodeStub* stub) {
   ASSERT(allow_stub_calls_ || stub->CompilingCallsToThisStubIsGCSafe());
-  jmp(stub->GetCode(), RelocInfo::CODE_TARGET);
+  jmp(stub->GetCode(isolate()), RelocInfo::CODE_TARGET);
 }
 
 
@@ -1956,11 +1969,11 @@ void MacroAssembler::PrepareCallApiFunction(int argc) {
 void MacroAssembler::CallApiFunctionAndReturn(Address function_address,
                                               int stack_space) {
   ExternalReference next_address =
-      ExternalReference::handle_scope_next_address();
+      ExternalReference::handle_scope_next_address(isolate());
   ExternalReference limit_address =
-      ExternalReference::handle_scope_limit_address();
+      ExternalReference::handle_scope_limit_address(isolate());
   ExternalReference level_address =
-      ExternalReference::handle_scope_level_address();
+      ExternalReference::handle_scope_level_address(isolate());
 
   // Allocate HandleScope in callee-save registers.
   mov(ebx, Operand::StaticVariable(next_address));
@@ -2084,7 +2097,7 @@ void MacroAssembler::JumpToExternalReference(const ExternalReference& ext) {
   // Set the entry point and jump to the C entry runtime stub.
   mov(ebx, Immediate(ext));
   CEntryStub ces(1);
-  jmp(ces.GetCode(), RelocInfo::CODE_TARGET);
+  jmp(ces.GetCode(isolate()), RelocInfo::CODE_TARGET);
 }
 
 
@@ -2706,17 +2719,15 @@ void MacroAssembler::JumpIfNotBothSequentialAsciiStrings(Register object1,
   movzx_b(scratch2, FieldOperand(scratch2, Map::kInstanceTypeOffset));
 
   // Check that both are flat ASCII strings.
-  const int kFlatAsciiStringMask = kIsNotStringMask | kStringRepresentationMask
-          | kStringEncodingMask | kAsciiDataHintTag;
+  const int kFlatAsciiStringMask =
+      kIsNotStringMask | kStringRepresentationMask | kStringEncodingMask;
   const int kFlatAsciiStringTag = ASCII_STRING_TYPE;
   // Interleave bits from both instance types and compare them in one check.
-  ASSERT_EQ(0, kFlatAsciiStringMask & (kFlatAsciiStringMask << 8));
-  ASSERT_EQ(ASCII_STRING_TYPE, ASCII_STRING_TYPE & kFlatAsciiStringMask);
+  ASSERT_EQ(0, kFlatAsciiStringMask & (kFlatAsciiStringMask << 3));
   and_(scratch1, kFlatAsciiStringMask);
   and_(scratch2, kFlatAsciiStringMask);
-  shl(scratch1, 8);
-  or_(scratch1, scratch2);
-  cmp(scratch1, kFlatAsciiStringTag | (kFlatAsciiStringTag << 8));
+  lea(scratch1, Operand(scratch1, scratch2, times_8, 0));
+  cmp(scratch1, kFlatAsciiStringTag | (kFlatAsciiStringTag << 3));
   j(not_equal, failure);
 }
 
@@ -3050,6 +3061,29 @@ void MacroAssembler::CheckEnumCache(Label* call_runtime) {
   cmp(ecx, isolate()->factory()->null_value());
   j(not_equal, &next);
 }
+
+
+void MacroAssembler::TestJSArrayForAllocationSiteInfo(
+    Register receiver_reg,
+    Register scratch_reg) {
+  Label no_info_available;
+
+  ExternalReference new_space_start =
+      ExternalReference::new_space_start(isolate());
+  ExternalReference new_space_allocation_top =
+      ExternalReference::new_space_allocation_top_address(isolate());
+
+  lea(scratch_reg, Operand(receiver_reg,
+      JSArray::kSize + AllocationSiteInfo::kSize - kHeapObjectTag));
+  cmp(scratch_reg, Immediate(new_space_start));
+  j(less, &no_info_available);
+  cmp(scratch_reg, Operand::StaticVariable(new_space_allocation_top));
+  j(greater, &no_info_available);
+  cmp(MemOperand(scratch_reg, -AllocationSiteInfo::kSize),
+      Immediate(Handle<Map>(isolate()->heap()->allocation_site_info_map())));
+  bind(&no_info_available);
+}
+
 
 } }  // namespace v8::internal
 

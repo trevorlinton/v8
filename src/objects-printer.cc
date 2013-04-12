@@ -69,7 +69,7 @@ void HeapObject::PrintHeader(FILE* out, const char* id) {
 void HeapObject::HeapObjectPrint(FILE* out) {
   InstanceType instance_type = map()->instance_type();
 
-  HandleScope scope;
+  HandleScope scope(GetIsolate());
   if (instance_type < FIRST_NONSTRING_TYPE) {
     String::cast(this)->StringPrint(out);
     return;
@@ -703,7 +703,7 @@ char* String::ToAsciiArray() {
   static char* buffer = NULL;
   if (buffer != NULL) free(buffer);
   buffer = new char[length()+1];
-  WriteToFlat(this, buffer, 0, length());
+  WriteToFlat(this, reinterpret_cast<uint8_t*>(buffer), 0, length());
   buffer[length()] = 0;
   return buffer;
 }
@@ -874,18 +874,36 @@ void Foreign::ForeignPrint(FILE* out) {
 }
 
 
-void AccessorInfo::AccessorInfoPrint(FILE* out) {
-  HeapObject::PrintHeader(out, "AccessorInfo");
+void ExecutableAccessorInfo::ExecutableAccessorInfoPrint(FILE* out) {
+  HeapObject::PrintHeader(out, "ExecutableAccessorInfo");
+  PrintF(out, "\n - name: ");
+  name()->ShortPrint(out);
+  PrintF(out, "\n - flag: ");
+  flag()->ShortPrint(out);
   PrintF(out, "\n - getter: ");
   getter()->ShortPrint(out);
   PrintF(out, "\n - setter: ");
   setter()->ShortPrint(out);
-  PrintF(out, "\n - name: ");
-  name()->ShortPrint(out);
   PrintF(out, "\n - data: ");
   data()->ShortPrint(out);
+}
+
+
+void DeclaredAccessorInfo::DeclaredAccessorInfoPrint(FILE* out) {
+  HeapObject::PrintHeader(out, "DeclaredAccessorInfo");
+  PrintF(out, "\n - name: ");
+  name()->ShortPrint(out);
   PrintF(out, "\n - flag: ");
   flag()->ShortPrint(out);
+  PrintF(out, "\n - descriptor: ");
+  descriptor()->ShortPrint(out);
+}
+
+
+void DeclaredAccessorDescriptor::DeclaredAccessorDescriptorPrint(FILE* out) {
+  HeapObject::PrintHeader(out, "DeclaredAccessorDescriptor");
+  PrintF(out, "\n - internal field: ");
+  internal_field()->ShortPrint(out);
 }
 
 
@@ -999,6 +1017,22 @@ void TypeSwitchInfo::TypeSwitchInfoPrint(FILE* out) {
   HeapObject::PrintHeader(out, "TypeSwitchInfo");
   PrintF(out, "\n - types: ");
   types()->ShortPrint(out);
+}
+
+
+void AllocationSiteInfo::AllocationSiteInfoPrint(FILE* out) {
+  HeapObject::PrintHeader(out, "AllocationSiteInfo");
+  PrintF(out, " - payload: ");
+  if (payload()->IsJSArray()) {
+    PrintF(out, "Array literal ");
+    payload()->ShortPrint(out);
+    PrintF(out, "\n");
+    return;
+  }
+
+  PrintF(out, "unknown payload ");
+  payload()->ShortPrint(out);
+  PrintF(out, "\n");
 }
 
 

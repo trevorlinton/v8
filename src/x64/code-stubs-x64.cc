@@ -32,9 +32,23 @@
 #include "bootstrapper.h"
 #include "code-stubs.h"
 #include "regexp-macro-assembler.h"
+#include "stub-cache.h"
+#include "runtime.h"
 
 namespace v8 {
 namespace internal {
+
+
+void FastCloneShallowObjectStub::InitializeInterfaceDescriptor(
+    Isolate* isolate,
+    CodeStubInterfaceDescriptor* descriptor) {
+  static Register registers[] = { rax, rbx, rcx, rdx };
+  descriptor->register_param_count_ = 4;
+  descriptor->register_params_ = registers;
+  descriptor->stack_parameter_count_ = NULL;
+  descriptor->deoptimization_handler_ =
+      Runtime::FunctionForId(Runtime::kCreateObjectLiteralShallow)->entry;
+}
 
 
 void KeyedLoadFastElementStub::InitializeInterfaceDescriptor(
@@ -44,7 +58,18 @@ void KeyedLoadFastElementStub::InitializeInterfaceDescriptor(
   descriptor->register_param_count_ = 2;
   descriptor->register_params_ = registers;
   descriptor->deoptimization_handler_ =
-      isolate->builtins()->KeyedLoadIC_Miss();
+      FUNCTION_ADDR(KeyedLoadIC_MissFromStubFailure);
+}
+
+
+void TransitionElementsKindStub::InitializeInterfaceDescriptor(
+    Isolate* isolate,
+    CodeStubInterfaceDescriptor* descriptor) {
+  static Register registers[] = { rax, rbx };
+  descriptor->register_param_count_ = 2;
+  descriptor->register_params_ = registers;
+  descriptor->deoptimization_handler_ =
+      Runtime::FunctionForId(Runtime::kTransitionElementsKind)->entry;
 }
 
 
@@ -316,6 +341,7 @@ static void GenerateFastCloneShallowArrayCommon(
     MacroAssembler* masm,
     int length,
     FastCloneShallowArrayStub::Mode mode,
+    AllocationSiteMode allocation_site_mode,
     Label* fail) {
   // Registers on entry:
   //
@@ -329,7 +355,12 @@ static void GenerateFastCloneShallowArrayCommon(
         ? FixedDoubleArray::SizeFor(length)
         : FixedArray::SizeFor(length);
   }
-  int size = JSArray::kSize + elements_size;
+  int size = JSArray::kSize;
+  int allocation_info_start = size;
+  if (allocation_site_mode == TRACK_ALLOCATION_SITE) {
+    size += AllocationSiteInfo::kSize;
+  }
+  size += elements_size;
 
   // Allocate both the JS array and the elements array in one big
   // allocation. This avoids multiple limit checks.
@@ -338,6 +369,12 @@ static void GenerateFastCloneShallowArrayCommon(
     flags = static_cast<AllocationFlags>(DOUBLE_ALIGNMENT | flags);
   }
   __ AllocateInNewSpace(size, rax, rbx, rdx, fail, flags);
+
+  if (allocation_site_mode == TRACK_ALLOCATION_SITE) {
+    __ LoadRoot(kScratchRegister, Heap::kAllocationSiteInfoMapRootIndex);
+    __ movq(FieldOperand(rax, allocation_info_start), kScratchRegister);
+    __ movq(FieldOperand(rax, allocation_info_start + kPointerSize), rcx);
+  }
 
   // Copy the JS array part.
   for (int i = 0; i < JSArray::kSize; i += kPointerSize) {
@@ -351,7 +388,11 @@ static void GenerateFastCloneShallowArrayCommon(
     // Get hold of the elements array of the boilerplate and setup the
     // elements pointer in the resulting object.
     __ movq(rcx, FieldOperand(rcx, JSArray::kElementsOffset));
-    __ lea(rdx, Operand(rax, JSArray::kSize));
+    if (allocation_site_mode == TRACK_ALLOCATION_SITE) {
+      __ lea(rdx, Operand(rax, JSArray::kSize + AllocationSiteInfo::kSize));
+    } else {
+      __ lea(rdx, Operand(rax, JSArray::kSize));
+    }
     __ movq(FieldOperand(rax, JSArray::kElementsOffset), rdx);
 
     // Copy the elements array.
@@ -404,16 +445,18 @@ void FastCloneShallowArrayStub::Generate(MacroAssembler* masm) {
     __ Cmp(FieldOperand(rbx, HeapObject::kMapOffset),
            factory->fixed_cow_array_map());
     __ j(not_equal, &check_fast_elements);
-    GenerateFastCloneShallowArrayCommon(masm, 0,
-                                        COPY_ON_WRITE_ELEMENTS, &slow_case);
+    GenerateFastCloneShallowArrayCommon(masm, 0, COPY_ON_WRITE_ELEMENTS,
+                                        allocation_site_mode_,
+                                        &slow_case);
     __ ret(3 * kPointerSize);
 
     __ bind(&check_fast_elements);
     __ Cmp(FieldOperand(rbx, HeapObject::kMapOffset),
            factory->fixed_array_map());
     __ j(not_equal, &double_elements);
-    GenerateFastCloneShallowArrayCommon(masm, length_,
-                                        CLONE_ELEMENTS, &slow_case);
+    GenerateFastCloneShallowArrayCommon(masm, length_, CLONE_ELEMENTS,
+                                        allocation_site_mode_,
+                                        &slow_case);
     __ ret(3 * kPointerSize);
 
     __ bind(&double_elements);
@@ -443,54 +486,13 @@ void FastCloneShallowArrayStub::Generate(MacroAssembler* masm) {
     __ pop(rcx);
   }
 
-  GenerateFastCloneShallowArrayCommon(masm, length_, mode, &slow_case);
+  GenerateFastCloneShallowArrayCommon(masm, length_, mode,
+                                      allocation_site_mode_,
+                                      &slow_case);
   __ ret(3 * kPointerSize);
 
   __ bind(&slow_case);
   __ TailCallRuntime(Runtime::kCreateArrayLiteralShallow, 3, 1);
-}
-
-
-void FastCloneShallowObjectStub::Generate(MacroAssembler* masm) {
-  // Stack layout on entry:
-  //
-  // [rsp + kPointerSize]: object literal flags.
-  // [rsp + (2 * kPointerSize)]: constant properties.
-  // [rsp + (3 * kPointerSize)]: literal index.
-  // [rsp + (4 * kPointerSize)]: literals array.
-
-  // Load boilerplate object into ecx and check if we need to create a
-  // boilerplate.
-  Label slow_case;
-  __ movq(rcx, Operand(rsp, 4 * kPointerSize));
-  __ movq(rax, Operand(rsp, 3 * kPointerSize));
-  SmiIndex index = masm->SmiToIndex(rax, rax, kPointerSizeLog2);
-  __ movq(rcx,
-          FieldOperand(rcx, index.reg, index.scale, FixedArray::kHeaderSize));
-  __ CompareRoot(rcx, Heap::kUndefinedValueRootIndex);
-  __ j(equal, &slow_case);
-
-  // Check that the boilerplate contains only fast properties and we can
-  // statically determine the instance size.
-  int size = JSObject::kHeaderSize + length_ * kPointerSize;
-  __ movq(rax, FieldOperand(rcx, HeapObject::kMapOffset));
-  __ movzxbq(rax, FieldOperand(rax, Map::kInstanceSizeOffset));
-  __ cmpq(rax, Immediate(size >> kPointerSizeLog2));
-  __ j(not_equal, &slow_case);
-
-  // Allocate the JS object and copy header together with all in-object
-  // properties from the boilerplate.
-  __ AllocateInNewSpace(size, rax, rbx, rdx, &slow_case, TAG_OBJECT);
-  for (int i = 0; i < size; i += kPointerSize) {
-    __ movq(rbx, FieldOperand(rcx, i));
-    __ movq(FieldOperand(rax, i), rbx);
-  }
-
-  // Return and remove the on-stack parameters.
-  __ ret(4 * kPointerSize);
-
-  __ bind(&slow_case);
-  __ TailCallRuntime(Runtime::kCreateObjectLiteralShallow, 4, 1);
 }
 
 
@@ -773,8 +775,8 @@ void UnaryOpStub::Generate(MacroAssembler* masm) {
     case UnaryOpIC::SMI:
       GenerateSmiStub(masm);
       break;
-    case UnaryOpIC::HEAP_NUMBER:
-      GenerateHeapNumberStub(masm);
+    case UnaryOpIC::NUMBER:
+      GenerateNumberStub(masm);
       break;
     case UnaryOpIC::GENERIC:
       GenerateGenericStub(masm);
@@ -855,13 +857,13 @@ void UnaryOpStub::GenerateSmiCodeBitNot(MacroAssembler* masm,
 
 
 // TODO(svenpanne): Use virtual functions instead of switch.
-void UnaryOpStub::GenerateHeapNumberStub(MacroAssembler* masm) {
+void UnaryOpStub::GenerateNumberStub(MacroAssembler* masm) {
   switch (op_) {
     case Token::SUB:
-      GenerateHeapNumberStubSub(masm);
+      GenerateNumberStubSub(masm);
       break;
     case Token::BIT_NOT:
-      GenerateHeapNumberStubBitNot(masm);
+      GenerateNumberStubBitNot(masm);
       break;
     default:
       UNREACHABLE();
@@ -869,7 +871,7 @@ void UnaryOpStub::GenerateHeapNumberStub(MacroAssembler* masm) {
 }
 
 
-void UnaryOpStub::GenerateHeapNumberStubSub(MacroAssembler* masm) {
+void UnaryOpStub::GenerateNumberStubSub(MacroAssembler* masm) {
   Label non_smi, slow, call_builtin;
   GenerateSmiCodeSub(masm, &non_smi, &call_builtin, Label::kNear);
   __ bind(&non_smi);
@@ -881,7 +883,7 @@ void UnaryOpStub::GenerateHeapNumberStubSub(MacroAssembler* masm) {
 }
 
 
-void UnaryOpStub::GenerateHeapNumberStubBitNot(
+void UnaryOpStub::GenerateNumberStubBitNot(
     MacroAssembler* masm) {
   Label non_smi, slow;
   GenerateSmiCodeBitNot(masm, &non_smi, Label::kNear);
@@ -1433,7 +1435,7 @@ void BinaryOpStub::GenerateOddballStub(MacroAssembler* masm) {
   }
   __ bind(&done);
 
-  GenerateHeapNumberStub(masm);
+  GenerateNumberStub(masm);
 }
 
 
@@ -1461,7 +1463,7 @@ static void BinaryOpStub_CheckSmiInput(MacroAssembler* masm,
 }
 
 
-void BinaryOpStub::GenerateHeapNumberStub(MacroAssembler* masm) {
+void BinaryOpStub::GenerateNumberStub(MacroAssembler* masm) {
   Label gc_required, not_number;
 
   // It could be that only SMIs have been seen at either the left
@@ -2339,6 +2341,150 @@ void MathPowStub::Generate(MacroAssembler* masm) {
 }
 
 
+void ArrayLengthStub::Generate(MacroAssembler* masm) {
+  Label miss;
+  Register receiver;
+  if (kind() == Code::KEYED_LOAD_IC) {
+    // ----------- S t a t e -------------
+    //  -- rax    : key
+    //  -- rdx    : receiver
+    //  -- rsp[0] : return address
+    // -----------------------------------
+    __ Cmp(rax, masm->isolate()->factory()->length_symbol());
+    receiver = rdx;
+  } else {
+    ASSERT(kind() == Code::LOAD_IC);
+    // ----------- S t a t e -------------
+    //  -- rax    : receiver
+    //  -- rcx    : name
+    //  -- rsp[0] : return address
+    // -----------------------------------
+    receiver = rax;
+  }
+
+  StubCompiler::GenerateLoadArrayLength(masm, receiver, r8, &miss);
+  __ bind(&miss);
+  StubCompiler::GenerateLoadMiss(masm, kind());
+}
+
+
+void FunctionPrototypeStub::Generate(MacroAssembler* masm) {
+  Label miss;
+  Register receiver;
+  if (kind() == Code::KEYED_LOAD_IC) {
+    // ----------- S t a t e -------------
+    //  -- rax    : key
+    //  -- rdx    : receiver
+    //  -- rsp[0] : return address
+    // -----------------------------------
+    __ Cmp(rax, masm->isolate()->factory()->prototype_symbol());
+    receiver = rdx;
+  } else {
+    ASSERT(kind() == Code::LOAD_IC);
+    // ----------- S t a t e -------------
+    //  -- rax    : receiver
+    //  -- rcx    : name
+    //  -- rsp[0] : return address
+    // -----------------------------------
+    receiver = rax;
+  }
+
+  StubCompiler::GenerateLoadFunctionPrototype(masm, receiver, r8, r9, &miss);
+  __ bind(&miss);
+  StubCompiler::GenerateLoadMiss(masm, kind());
+}
+
+
+void StringLengthStub::Generate(MacroAssembler* masm) {
+  Label miss;
+  Register receiver;
+  if (kind() == Code::KEYED_LOAD_IC) {
+    // ----------- S t a t e -------------
+    //  -- rax    : key
+    //  -- rdx    : receiver
+    //  -- rsp[0] : return address
+    // -----------------------------------
+    __ Cmp(rax, masm->isolate()->factory()->length_symbol());
+    receiver = rdx;
+  } else {
+    ASSERT(kind() == Code::LOAD_IC);
+    // ----------- S t a t e -------------
+    //  -- rax    : receiver
+    //  -- rcx    : name
+    //  -- rsp[0] : return address
+    // -----------------------------------
+    receiver = rax;
+  }
+
+  StubCompiler::GenerateLoadStringLength(masm, receiver, r8, r9, &miss,
+                                         support_wrapper_);
+  __ bind(&miss);
+  StubCompiler::GenerateLoadMiss(masm, kind());
+}
+
+
+void StoreArrayLengthStub::Generate(MacroAssembler* masm) {
+  // ----------- S t a t e -------------
+  //  -- rax    : value
+  //  -- rcx    : key
+  //  -- rdx    : receiver
+  //  -- rsp[0] : return address
+  // -----------------------------------
+  //
+  // This accepts as a receiver anything JSArray::SetElementsLength accepts
+  // (currently anything except for external arrays which means anything with
+  // elements of FixedArray type).  Value must be a number, but only smis are
+  // accepted as the most common case.
+
+  Label miss;
+
+  Register receiver = rdx;
+  Register value = rax;
+  Register scratch = rbx;
+  if (kind() == Code::KEYED_STORE_IC) {
+    __ Cmp(rcx, masm->isolate()->factory()->length_symbol());
+  }
+
+  // Check that the receiver isn't a smi.
+  __ JumpIfSmi(receiver, &miss);
+
+  // Check that the object is a JS array.
+  __ CmpObjectType(receiver, JS_ARRAY_TYPE, scratch);
+  __ j(not_equal, &miss);
+
+  // Check that elements are FixedArray.
+  // We rely on StoreIC_ArrayLength below to deal with all types of
+  // fast elements (including COW).
+  __ movq(scratch, FieldOperand(receiver, JSArray::kElementsOffset));
+  __ CmpObjectType(scratch, FIXED_ARRAY_TYPE, scratch);
+  __ j(not_equal, &miss);
+
+  // Check that the array has fast properties, otherwise the length
+  // property might have been redefined.
+  __ movq(scratch, FieldOperand(receiver, JSArray::kPropertiesOffset));
+  __ CompareRoot(FieldOperand(scratch, FixedArray::kMapOffset),
+                 Heap::kHashTableMapRootIndex);
+  __ j(equal, &miss);
+
+  // Check that value is a smi.
+  __ JumpIfNotSmi(value, &miss);
+
+  // Prepare tail call to StoreIC_ArrayLength.
+  __ pop(scratch);
+  __ push(receiver);
+  __ push(value);
+  __ push(scratch);  // return address
+
+  ExternalReference ref =
+      ExternalReference(IC_Utility(IC::kStoreIC_ArrayLength), masm->isolate());
+  __ TailCallExternalReference(ref, 2, 1);
+
+  __ bind(&miss);
+
+  StubCompiler::GenerateStoreMiss(masm, kind());
+}
+
+
 void ArgumentsAccessStub::GenerateReadElement(MacroAssembler* masm) {
   // The key is in rdx and the parameter count is in rax.
 
@@ -2778,6 +2924,7 @@ void RegExpExecStub::Generate(MacroAssembler* masm) {
   __ JumpIfSmi(rax, &runtime);
   __ CmpObjectType(rax, JS_REGEXP_TYPE, kScratchRegister);
   __ j(not_equal, &runtime);
+
   // Check that the RegExp has been compiled (data contains a fixed array).
   __ movq(rax, FieldOperand(rax, JSRegExp::kDataOffset));
   if (FLAG_debug_code) {
@@ -2798,149 +2945,121 @@ void RegExpExecStub::Generate(MacroAssembler* masm) {
   // Check that the number of captures fit in the static offsets vector buffer.
   __ SmiToInteger32(rdx,
                     FieldOperand(rax, JSRegExp::kIrregexpCaptureCountOffset));
-  // Calculate number of capture registers (number_of_captures + 1) * 2.
-  __ leal(rdx, Operand(rdx, rdx, times_1, 2));
-  // Check that the static offsets vector buffer is large enough.
-  __ cmpl(rdx, Immediate(Isolate::kJSRegexpStaticOffsetsVectorSize));
+  // Check (number_of_captures + 1) * 2 <= offsets vector size
+  // Or              number_of_captures <= offsets vector size / 2 - 1
+  STATIC_ASSERT(Isolate::kJSRegexpStaticOffsetsVectorSize >= 2);
+  __ cmpl(rdx, Immediate(Isolate::kJSRegexpStaticOffsetsVectorSize / 2 - 1));
   __ j(above, &runtime);
-
-  // rax: RegExp data (FixedArray)
-  // rdx: Number of capture registers
-  // Check that the second argument is a string.
-  __ movq(rdi, Operand(rsp, kSubjectOffset));
-  __ JumpIfSmi(rdi, &runtime);
-  Condition is_string = masm->IsObjectStringType(rdi, rbx, rbx);
-  __ j(NegateCondition(is_string), &runtime);
-
-  // rdi: Subject string.
-  // rax: RegExp data (FixedArray).
-  // rdx: Number of capture registers.
-  // Check that the third argument is a positive smi less than the string
-  // length. A negative value will be greater (unsigned comparison).
-  __ movq(rbx, Operand(rsp, kPreviousIndexOffset));
-  __ JumpIfNotSmi(rbx, &runtime);
-  __ SmiCompare(rbx, FieldOperand(rdi, String::kLengthOffset));
-  __ j(above_equal, &runtime);
-
-  // rax: RegExp data (FixedArray)
-  // rdx: Number of capture registers
-  // Check that the fourth object is a JSArray object.
-  __ movq(rdi, Operand(rsp, kLastMatchInfoOffset));
-  __ JumpIfSmi(rdi, &runtime);
-  __ CmpObjectType(rdi, JS_ARRAY_TYPE, kScratchRegister);
-  __ j(not_equal, &runtime);
-  // Check that the JSArray is in fast case.
-  __ movq(rbx, FieldOperand(rdi, JSArray::kElementsOffset));
-  __ movq(rdi, FieldOperand(rbx, HeapObject::kMapOffset));
-  __ CompareRoot(FieldOperand(rbx, HeapObject::kMapOffset),
-                 Heap::kFixedArrayMapRootIndex);
-  __ j(not_equal, &runtime);
-  // Check that the last match info has space for the capture registers and the
-  // additional information. Ensure no overflow in add.
-  STATIC_ASSERT(FixedArray::kMaxLength < kMaxInt - FixedArray::kLengthOffset);
-  __ SmiToInteger32(rdi, FieldOperand(rbx, FixedArray::kLengthOffset));
-  __ addl(rdx, Immediate(RegExpImpl::kLastMatchOverhead));
-  __ cmpl(rdx, rdi);
-  __ j(greater, &runtime);
 
   // Reset offset for possibly sliced string.
   __ Set(r14, 0);
-  // rax: RegExp data (FixedArray)
-  // Check the representation and encoding of the subject string.
-  Label seq_ascii_string, seq_two_byte_string, check_code;
   __ movq(rdi, Operand(rsp, kSubjectOffset));
-  // Make a copy of the original subject string.
-  __ movq(r15, rdi);
+  __ JumpIfSmi(rdi, &runtime);
+  __ movq(r15, rdi);  // Make a copy of the original subject string.
   __ movq(rbx, FieldOperand(rdi, HeapObject::kMapOffset));
   __ movzxbl(rbx, FieldOperand(rbx, Map::kInstanceTypeOffset));
-  // First check for flat two byte string.
+  // rax: RegExp data (FixedArray)
+  // rdi: subject string
+  // r15: subject string
+  // Handle subject string according to its encoding and representation:
+  // (1) Sequential two byte?  If yes, go to (9).
+  // (2) Sequential one byte?  If yes, go to (6).
+  // (3) Anything but sequential or cons?  If yes, go to (7).
+  // (4) Cons string.  If the string is flat, replace subject with first string.
+  //     Otherwise bailout.
+  // (5a) Is subject sequential two byte?  If yes, go to (9).
+  // (5b) Is subject external?  If yes, go to (8).
+  // (6) One byte sequential.  Load regexp code for one byte.
+  // (E) Carry on.
+  /// [...]
+
+  // Deferred code at the end of the stub:
+  // (7) Not a long external string?  If yes, go to (10).
+  // (8) External string.  Make it, offset-wise, look like a sequential string.
+  // (8a) Is the external string one byte?  If yes, go to (6).
+  // (9) Two byte sequential.  Load regexp code for one byte. Go to (E).
+  // (10) Short external string or not a string?  If yes, bail out to runtime.
+  // (11) Sliced string.  Replace subject with parent. Go to (5a).
+
+  Label seq_one_byte_string /* 6 */, seq_two_byte_string /* 9 */,
+        external_string /* 8 */, check_underlying /* 5a */,
+        not_seq_nor_cons /* 7 */, check_code /* E */,
+        not_long_external /* 10 */;
+
+  // (1) Sequential two byte?  If yes, go to (9).
   __ andb(rbx, Immediate(kIsNotStringMask |
                          kStringRepresentationMask |
                          kStringEncodingMask |
                          kShortExternalStringMask));
   STATIC_ASSERT((kStringTag | kSeqStringTag | kTwoByteStringTag) == 0);
-  __ j(zero, &seq_two_byte_string, Label::kNear);
-  // Any other flat string must be a flat ASCII string.  None of the following
-  // string type tests will succeed if subject is not a string or a short
-  // external string.
+  __ j(zero, &seq_two_byte_string);  // Go to (9).
+
+  // (2) Sequential one byte?  If yes, go to (6).
+  // Any other sequential string must be one byte.
   __ andb(rbx, Immediate(kIsNotStringMask |
                          kStringRepresentationMask |
                          kShortExternalStringMask));
-  __ j(zero, &seq_ascii_string, Label::kNear);
+  __ j(zero, &seq_one_byte_string, Label::kNear);  // Go to (6).
 
-  // rbx: whether subject is a string and if yes, its string representation
-  // Check for flat cons string or sliced string.
-  // A flat cons string is a cons string where the second part is the empty
-  // string. In that case the subject string is just the first part of the cons
-  // string. Also in this case the first part of the cons string is known to be
-  // a sequential string or an external string.
-  // In the case of a sliced string its offset has to be taken into account.
-  Label cons_string, external_string, check_encoding;
+  // (3) Anything but sequential or cons?  If yes, go to (7).
+  // We check whether the subject string is a cons, since sequential strings
+  // have already been covered.
   STATIC_ASSERT(kConsStringTag < kExternalStringTag);
   STATIC_ASSERT(kSlicedStringTag > kExternalStringTag);
   STATIC_ASSERT(kIsNotStringMask > kExternalStringTag);
   STATIC_ASSERT(kShortExternalStringTag > kExternalStringTag);
   __ cmpq(rbx, Immediate(kExternalStringTag));
-  __ j(less, &cons_string, Label::kNear);
-  __ j(equal, &external_string);
+  __ j(greater_equal, &not_seq_nor_cons);  // Go to (7).
 
-  // Catch non-string subject or short external string.
-  STATIC_ASSERT(kNotStringTag != 0 && kShortExternalStringTag !=0);
-  __ testb(rbx, Immediate(kIsNotStringMask | kShortExternalStringMask));
-  __ j(not_zero, &runtime);
-
-  // String is sliced.
-  __ SmiToInteger32(r14, FieldOperand(rdi, SlicedString::kOffsetOffset));
-  __ movq(rdi, FieldOperand(rdi, SlicedString::kParentOffset));
-  // r14: slice offset
-  // r15: original subject string
-  // rdi: parent string
-  __ jmp(&check_encoding, Label::kNear);
-  // String is a cons string, check whether it is flat.
-  __ bind(&cons_string);
+  // (4) Cons string.  Check that it's flat.
+  // Replace subject with first string and reload instance type.
   __ CompareRoot(FieldOperand(rdi, ConsString::kSecondOffset),
                  Heap::kEmptyStringRootIndex);
   __ j(not_equal, &runtime);
   __ movq(rdi, FieldOperand(rdi, ConsString::kFirstOffset));
-  // rdi: first part of cons string or parent of sliced string.
-  // rbx: map of first part of cons string or map of parent of sliced string.
-  // Is first part of cons or parent of slice a flat two byte string?
-  __ bind(&check_encoding);
+  __ bind(&check_underlying);
   __ movq(rbx, FieldOperand(rdi, HeapObject::kMapOffset));
-  __ testb(FieldOperand(rbx, Map::kInstanceTypeOffset),
-           Immediate(kStringRepresentationMask | kStringEncodingMask));
-  STATIC_ASSERT((kSeqStringTag | kTwoByteStringTag) == 0);
-  __ j(zero, &seq_two_byte_string, Label::kNear);
-  // Any other flat string must be sequential ASCII or external.
-  __ testb(FieldOperand(rbx, Map::kInstanceTypeOffset),
-           Immediate(kStringRepresentationMask));
-  __ j(not_zero, &external_string);
+  __ movq(rbx, FieldOperand(rbx, Map::kInstanceTypeOffset));
 
-  __ bind(&seq_ascii_string);
-  // rdi: subject string (sequential ASCII)
+  // (5a) Is subject sequential two byte?  If yes, go to (9).
+  __ testb(rbx, Immediate(kStringRepresentationMask | kStringEncodingMask));
+  STATIC_ASSERT((kSeqStringTag | kTwoByteStringTag) == 0);
+  __ j(zero, &seq_two_byte_string);  // Go to (9).
+  // (5b) Is subject external?  If yes, go to (8).
+  __ testb(rbx, Immediate(kStringRepresentationMask));
+  // The underlying external string is never a short external string.
+  STATIC_CHECK(ExternalString::kMaxShortLength < ConsString::kMinLength);
+  STATIC_CHECK(ExternalString::kMaxShortLength < SlicedString::kMinLength);
+  __ j(not_zero, &external_string);  // Go to (8)
+
+  // (6) One byte sequential.  Load regexp code for one byte.
+  __ bind(&seq_one_byte_string);
   // rax: RegExp data (FixedArray)
   __ movq(r11, FieldOperand(rax, JSRegExp::kDataAsciiCodeOffset));
-  __ Set(rcx, 1);  // Type is ASCII.
-  __ jmp(&check_code, Label::kNear);
+  __ Set(rcx, 1);  // Type is one byte.
 
-  __ bind(&seq_two_byte_string);
-  // rdi: subject string (flat two-byte)
-  // rax: RegExp data (FixedArray)
-  __ movq(r11, FieldOperand(rax, JSRegExp::kDataUC16CodeOffset));
-  __ Set(rcx, 0);  // Type is two byte.
-
+  // (E) Carry on.  String handling is done.
   __ bind(&check_code);
+  // r11: irregexp code
   // Check that the irregexp code has been generated for the actual string
   // encoding. If it has, the field contains a code object otherwise it contains
   // smi (code flushing support)
   __ JumpIfSmi(r11, &runtime);
 
-  // rdi: subject string
+  // rdi: sequential subject string (or look-alike, external string)
+  // r15: original subject string
   // rcx: encoding of subject string (1 if ASCII, 0 if two_byte);
   // r11: code
   // Load used arguments before starting to push arguments for call to native
   // RegExp code to avoid handling changing stack height.
-  __ SmiToInteger64(rbx, Operand(rsp, kPreviousIndexOffset));
+  // We have to use r15 instead of rdi to load the length because rdi might
+  // have been only made to look like a sequential string when it actually
+  // is an external string.
+  __ movq(rbx, Operand(rsp, kPreviousIndexOffset));
+  __ JumpIfNotSmi(rbx, &runtime);
+  __ SmiCompare(rbx, FieldOperand(r15, String::kLengthOffset));
+  __ j(above_equal, &runtime);
+  __ SmiToInteger64(rbx, rbx);
 
   // rdi: subject string
   // rbx: previous index
@@ -3079,9 +3198,23 @@ void RegExpExecStub::Generate(MacroAssembler* masm) {
   __ leal(rdx, Operand(rax, rax, times_1, 2));
 
   // rdx: Number of capture registers
-  // Load last_match_info which is still known to be a fast case JSArray.
-  __ movq(rax, Operand(rsp, kLastMatchInfoOffset));
-  __ movq(rbx, FieldOperand(rax, JSArray::kElementsOffset));
+  // Check that the fourth object is a JSArray object.
+  __ movq(r15, Operand(rsp, kLastMatchInfoOffset));
+  __ JumpIfSmi(r15, &runtime);
+  __ CmpObjectType(r15, JS_ARRAY_TYPE, kScratchRegister);
+  __ j(not_equal, &runtime);
+  // Check that the JSArray is in fast case.
+  __ movq(rbx, FieldOperand(r15, JSArray::kElementsOffset));
+  __ movq(rax, FieldOperand(rbx, HeapObject::kMapOffset));
+  __ CompareRoot(rax, Heap::kFixedArrayMapRootIndex);
+  __ j(not_equal, &runtime);
+  // Check that the last match info has space for the capture registers and the
+  // additional information. Ensure no overflow in add.
+  STATIC_ASSERT(FixedArray::kMaxLength < kMaxInt - FixedArray::kLengthOffset);
+  __ SmiToInteger32(rax, FieldOperand(rbx, FixedArray::kLengthOffset));
+  __ subl(rax, Immediate(RegExpImpl::kLastMatchOverhead));
+  __ cmpl(rdx, rax);
+  __ j(greater, &runtime);
 
   // rbx: last_match_info backing store (FixedArray)
   // rdx: number of capture registers
@@ -3092,12 +3225,13 @@ void RegExpExecStub::Generate(MacroAssembler* masm) {
   // Store last subject and last input.
   __ movq(rax, Operand(rsp, kSubjectOffset));
   __ movq(FieldOperand(rbx, RegExpImpl::kLastSubjectOffset), rax);
+  __ movq(rcx, rax);
   __ RecordWriteField(rbx,
                       RegExpImpl::kLastSubjectOffset,
                       rax,
                       rdi,
                       kDontSaveFPRegs);
-  __ movq(rax, Operand(rsp, kSubjectOffset));
+  __ movq(rax, rcx);
   __ movq(FieldOperand(rbx, RegExpImpl::kLastInputOffset), rax);
   __ RecordWriteField(rbx,
                       RegExpImpl::kLastInputOffset,
@@ -3131,7 +3265,7 @@ void RegExpExecStub::Generate(MacroAssembler* masm) {
   __ bind(&done);
 
   // Return last match info.
-  __ movq(rax, Operand(rsp, kLastMatchInfoOffset));
+  __ movq(rax, r15);
   __ ret(4 * kPointerSize);
 
   __ bind(&exception);
@@ -3157,9 +3291,17 @@ void RegExpExecStub::Generate(MacroAssembler* masm) {
   __ bind(&termination_exception);
   __ ThrowUncatchable(rax);
 
-  // External string.  Short external strings have already been ruled out.
-  // rdi: subject string (expected to be external)
-  // rbx: scratch
+  // Do the runtime call to execute the regexp.
+  __ bind(&runtime);
+  __ TailCallRuntime(Runtime::kRegExpExec, 4, 1);
+
+  // Deferred code for string handling.
+  // (7) Not a long external string?  If yes, go to (10).
+  __ bind(&not_seq_nor_cons);
+  // Compare flags are still set from (3).
+  __ j(greater, &not_long_external, Label::kNear);  // Go to (10).
+
+  // (8) External string.  Short external strings have been ruled out.
   __ bind(&external_string);
   __ movq(rbx, FieldOperand(rdi, HeapObject::kMapOffset));
   __ movzxbl(rbx, FieldOperand(rbx, Map::kInstanceTypeOffset));
@@ -3174,13 +3316,30 @@ void RegExpExecStub::Generate(MacroAssembler* masm) {
   STATIC_ASSERT(SeqTwoByteString::kHeaderSize == SeqOneByteString::kHeaderSize);
   __ subq(rdi, Immediate(SeqTwoByteString::kHeaderSize - kHeapObjectTag));
   STATIC_ASSERT(kTwoByteStringTag == 0);
+  // (8a) Is the external string one byte?  If yes, go to (6).
   __ testb(rbx, Immediate(kStringEncodingMask));
-  __ j(not_zero, &seq_ascii_string);
-  __ jmp(&seq_two_byte_string);
+  __ j(not_zero, &seq_one_byte_string);  // Goto (6).
 
-  // Do the runtime call to execute the regexp.
-  __ bind(&runtime);
-  __ TailCallRuntime(Runtime::kRegExpExec, 4, 1);
+  // rdi: subject string (flat two-byte)
+  // rax: RegExp data (FixedArray)
+  // (9) Two byte sequential.  Load regexp code for one byte.  Go to (E).
+  __ bind(&seq_two_byte_string);
+  __ movq(r11, FieldOperand(rax, JSRegExp::kDataUC16CodeOffset));
+  __ Set(rcx, 0);  // Type is two byte.
+  __ jmp(&check_code);  // Go to (E).
+
+  // (10) Not a string or a short external string?  If yes, bail out to runtime.
+  __ bind(&not_long_external);
+  // Catch non-string subject or short external string.
+  STATIC_ASSERT(kNotStringTag != 0 && kShortExternalStringTag !=0);
+  __ testb(rbx, Immediate(kIsNotStringMask | kShortExternalStringMask));
+  __ j(not_zero, &runtime);
+
+  // (11) Sliced string.  Replace subject with parent. Go to (5a).
+  // Load offset into r14 and replace subject string with parent.
+  __ SmiToInteger32(r14, FieldOperand(rdi, SlicedString::kOffsetOffset));
+  __ movq(rdi, FieldOperand(rdi, SlicedString::kParentOffset));
+  __ jmp(&check_underlying);
 #endif  // V8_INTERPRETED_REGEXP
 }
 
@@ -3393,7 +3552,7 @@ static void CheckInputType(MacroAssembler* masm,
   Label ok;
   if (expected == CompareIC::SMI) {
     __ JumpIfNotSmi(input, fail);
-  } else if (expected == CompareIC::HEAP_NUMBER) {
+  } else if (expected == CompareIC::NUMBER) {
     __ JumpIfSmi(input, &ok);
     __ CompareMap(input, masm->isolate()->factory()->heap_number_map(), NULL);
     __ j(not_equal, fail);
@@ -3879,23 +4038,36 @@ bool CEntryStub::IsPregenerated() {
 }
 
 
-void CodeStub::GenerateStubsAheadOfTime() {
-  CEntryStub::GenerateAheadOfTime();
-  StoreBufferOverflowStub::GenerateFixedRegStubsAheadOfTime();
+void CodeStub::GenerateStubsAheadOfTime(Isolate* isolate) {
+  CEntryStub::GenerateAheadOfTime(isolate);
+  StoreBufferOverflowStub::GenerateFixedRegStubsAheadOfTime(isolate);
   // It is important that the store buffer overflow stubs are generated first.
-  RecordWriteStub::GenerateFixedRegStubsAheadOfTime();
+  RecordWriteStub::GenerateFixedRegStubsAheadOfTime(isolate);
 }
 
 
-void CodeStub::GenerateFPStubs() {
+void CodeStub::GenerateFPStubs(Isolate* isolate) {
 }
 
 
-void CEntryStub::GenerateAheadOfTime() {
+void CEntryStub::GenerateAheadOfTime(Isolate* isolate) {
   CEntryStub stub(1, kDontSaveFPRegs);
-  stub.GetCode()->set_is_pregenerated(true);
+  stub.GetCode(isolate)->set_is_pregenerated(true);
   CEntryStub save_doubles(1, kSaveFPRegs);
-  save_doubles.GetCode()->set_is_pregenerated(true);
+  save_doubles.GetCode(isolate)->set_is_pregenerated(true);
+}
+
+
+static void JumpIfOOM(MacroAssembler* masm,
+                      Register value,
+                      Register scratch,
+                      Label* oom_label) {
+  __ movq(scratch, value);
+  STATIC_ASSERT(Failure::OUT_OF_MEMORY_EXCEPTION == 3);
+  STATIC_ASSERT(kFailureTag == 3);
+  __ and_(scratch, Immediate(0xf));
+  __ cmpq(scratch, Immediate(0xf));
+  __ j(equal, oom_label);
 }
 
 
@@ -4012,9 +4184,7 @@ void CEntryStub::GenerateCore(MacroAssembler* masm,
   __ j(zero, &retry, Label::kNear);
 
   // Special handling of out of memory exceptions.
-  __ movq(kScratchRegister, Failure::OutOfMemoryException(), RelocInfo::NONE64);
-  __ cmpq(rax, kScratchRegister);
-  __ j(equal, throw_out_of_memory_exception);
+  JumpIfOOM(masm, rax, kScratchRegister, throw_out_of_memory_exception);
 
   // Retrieve the pending exception and clear the variable.
   ExternalReference pending_exception_address(
@@ -4111,7 +4281,10 @@ void CEntryStub::Generate(MacroAssembler* masm) {
   // Set pending exception and rax to out of memory exception.
   ExternalReference pending_exception(Isolate::kPendingExceptionAddress,
                                       isolate);
-  __ movq(rax, Failure::OutOfMemoryException(), RelocInfo::NONE64);
+  Label already_have_failure;
+  JumpIfOOM(masm, rax, kScratchRegister, &already_have_failure);
+  __ movq(rax, Failure::OutOfMemoryException(0x1), RelocInfo::NONE64);
+  __ bind(&already_have_failure);
   __ Store(pending_exception, rax);
   // Fall through to the next label.
 
@@ -4534,7 +4707,7 @@ void StringCharCodeAtGenerator::GenerateSlow(
 void StringCharFromCodeGenerator::GenerateFast(MacroAssembler* masm) {
   // Fast case of Heap::LookupSingleCharacterStringFromCode.
   __ JumpIfNotSmi(code_, &slow_case_);
-  __ SmiCompare(code_, Smi::FromInt(String::kMaxAsciiCharCode));
+  __ SmiCompare(code_, Smi::FromInt(String::kMaxOneByteCharCode));
   __ j(above, &slow_case_);
 
   __ LoadRoot(result_, Heap::kSingleCharacterStringCacheRootIndex);
@@ -4563,23 +4736,6 @@ void StringCharFromCodeGenerator::GenerateSlow(
   __ jmp(&exit_);
 
   __ Abort("Unexpected fallthrough from CharFromCode slow case");
-}
-
-
-// -------------------------------------------------------------------------
-// StringCharAtGenerator
-
-void StringCharAtGenerator::GenerateFast(MacroAssembler* masm) {
-  char_code_at_generator_.GenerateFast(masm);
-  char_from_code_generator_.GenerateFast(masm);
-}
-
-
-void StringCharAtGenerator::GenerateSlow(
-    MacroAssembler* masm,
-    const RuntimeCallHelper& call_helper) {
-  char_code_at_generator_.GenerateSlow(masm, call_helper);
-  char_from_code_generator_.GenerateSlow(masm, call_helper);
 }
 
 
@@ -4740,6 +4896,11 @@ void StringAddStub::Generate(MacroAssembler* masm) {
   // r9: second instance type.
   __ testb(rcx, Immediate(kAsciiDataHintMask));
   __ j(not_zero, &ascii_data);
+  __ xor_(r8, r9);
+  STATIC_ASSERT(kOneByteStringTag != 0 && kAsciiDataHintTag != 0);
+  __ andb(r8, Immediate(kOneByteStringTag | kAsciiDataHintTag));
+  __ cmpb(r8, Immediate(kOneByteStringTag | kAsciiDataHintTag));
+  __ j(equal, &ascii_data);
   // Allocate a two byte cons string.
   __ AllocateTwoByteConsString(rcx, rdi, no_reg, &call_runtime);
   __ jmp(&allocated);
@@ -5198,6 +5359,11 @@ void SubStringStub::Generate(MacroAssembler* masm) {
   __ IncrementCounter(counters->sub_string_native(), 1);
   __ ret(kArgumentsSize);
   __ bind(&not_original_string);
+
+  Label single_char;
+  __ SmiCompare(rcx, Smi::FromInt(1));
+  __ j(equal, &single_char);
+
   __ SmiToInteger32(rcx, rcx);
 
   // rax: string
@@ -5358,6 +5524,17 @@ void SubStringStub::Generate(MacroAssembler* masm) {
   // Just jump to runtime to create the sub string.
   __ bind(&runtime);
   __ TailCallRuntime(Runtime::kSubString, 3, 1);
+
+  __ bind(&single_char);
+  // rax: string
+  // rbx: instance type
+  // rcx: sub string length (smi)
+  // rdx: from index (smi)
+  StringCharAtGenerator generator(
+      rax, rdx, rcx, rax, &runtime, &runtime, &runtime, STRING_INDEX_IS_NUMBER);
+  generator.GenerateFast(masm);
+  __ ret(kArgumentsSize);
+  generator.SkipSlow(masm, &runtime);
 }
 
 
@@ -5445,16 +5622,32 @@ void StringCompareStub::GenerateCompareFlatAsciiStrings(MacroAssembler* masm,
   // Compare lengths (precomputed).
   __ bind(&compare_lengths);
   __ SmiTest(length_difference);
+#ifndef ENABLE_LATIN_1
   __ j(not_zero, &result_not_equal, Label::kNear);
+#else
+  Label length_not_equal;
+  __ j(not_zero, &length_not_equal, Label::kNear);
+#endif
 
   // Result is EQUAL.
   __ Move(rax, Smi::FromInt(EQUAL));
   __ ret(0);
 
   Label result_greater;
+#ifdef ENABLE_LATIN_1
+  Label result_less;
+  __ bind(&length_not_equal);
+  __ j(greater, &result_greater, Label::kNear);
+  __ jmp(&result_less, Label::kNear);
+#endif
   __ bind(&result_not_equal);
   // Unequal comparison of left to right, either character or length.
+#ifndef ENABLE_LATIN_1
   __ j(greater, &result_greater, Label::kNear);
+#else
+  __ j(above, &result_greater, Label::kNear);
+  __ bind(&result_less);
+#endif
 
   // Result is LESS.
   __ Move(rax, Smi::FromInt(LESS));
@@ -5561,8 +5754,8 @@ void ICCompareStub::GenerateSmis(MacroAssembler* masm) {
 }
 
 
-void ICCompareStub::GenerateHeapNumbers(MacroAssembler* masm) {
-  ASSERT(state_ == CompareIC::HEAP_NUMBER);
+void ICCompareStub::GenerateNumbers(MacroAssembler* masm) {
+  ASSERT(state_ == CompareIC::NUMBER);
 
   Label generic_stub;
   Label unordered, maybe_undefined1, maybe_undefined2;
@@ -5615,7 +5808,7 @@ void ICCompareStub::GenerateHeapNumbers(MacroAssembler* masm) {
   __ bind(&generic_stub);
   ICCompareStub stub(op_, CompareIC::GENERIC, CompareIC::GENERIC,
                      CompareIC::GENERIC);
-  __ jmp(stub.GetCode(), RelocInfo::CODE_TARGET);
+  __ jmp(stub.GetCode(masm->isolate()), RelocInfo::CODE_TARGET);
 
   __ bind(&maybe_undefined1);
   if (Token::IsOrderedRelationalCompareOp(op_)) {
@@ -6106,15 +6299,16 @@ bool RecordWriteStub::IsPregenerated() {
 }
 
 
-void StoreBufferOverflowStub::GenerateFixedRegStubsAheadOfTime() {
+void StoreBufferOverflowStub::GenerateFixedRegStubsAheadOfTime(
+    Isolate* isolate) {
   StoreBufferOverflowStub stub1(kDontSaveFPRegs);
-  stub1.GetCode()->set_is_pregenerated(true);
+  stub1.GetCode(isolate)->set_is_pregenerated(true);
   StoreBufferOverflowStub stub2(kSaveFPRegs);
-  stub2.GetCode()->set_is_pregenerated(true);
+  stub2.GetCode(isolate)->set_is_pregenerated(true);
 }
 
 
-void RecordWriteStub::GenerateFixedRegStubsAheadOfTime() {
+void RecordWriteStub::GenerateFixedRegStubsAheadOfTime(Isolate* isolate) {
   for (AheadOfTimeWriteBarrierStubList* entry = kAheadOfTime;
        !entry->object.is(no_reg);
        entry++) {
@@ -6123,7 +6317,7 @@ void RecordWriteStub::GenerateFixedRegStubsAheadOfTime() {
                          entry->address,
                          entry->action,
                          kDontSaveFPRegs);
-    stub.GetCode()->set_is_pregenerated(true);
+    stub.GetCode(isolate)->set_is_pregenerated(true);
   }
 }
 
@@ -6416,6 +6610,21 @@ void StoreArrayLiteralElementStub::Generate(MacroAssembler* masm) {
                                  xmm0,
                                  &slow_elements);
   __ ret(0);
+}
+
+
+void StubFailureTrampolineStub::Generate(MacroAssembler* masm) {
+  ASSERT(!Serializer::enabled());
+  CEntryStub ces(1, kSaveFPRegs);
+  __ Call(ces.GetCode(masm->isolate()), RelocInfo::CODE_TARGET);
+  int parameter_count_offset =
+      StubFailureTrampolineFrame::kCallerStackParameterCountFrameOffset;
+  __ movq(rbx, MemOperand(rbp, parameter_count_offset));
+  masm->LeaveFrame(StackFrame::STUB_FAILURE_TRAMPOLINE);
+  __ pop(rcx);
+  __ lea(rsp, MemOperand(rsp, rbx, times_pointer_size,
+                         extra_expression_stack_count_ * kPointerSize));
+  __ jmp(rcx);  // Return to IC Miss stub, continuation still on stack.
 }
 
 

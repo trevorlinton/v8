@@ -80,7 +80,6 @@ static void InitializeVM() {
     v8::ExtensionConfiguration config(1, extensions);
     env = v8::Context::New(&config);
   }
-  v8::HandleScope scope;
   env->Enter();
 }
 
@@ -1001,7 +1000,8 @@ TEST(CachedHashOverflow) {
   // We incorrectly allowed strings to be tagged as array indices even if their
   // values didn't fit in the hash field.
   // See http://code.google.com/p/v8/issues/detail?id=728
-  ZoneScope zone(Isolate::Current()->runtime_zone(), DELETE_ON_EXIT);
+  Isolate* isolate = Isolate::Current();
+  ZoneScope zone(isolate->runtime_zone(), DELETE_ON_EXIT);
 
   InitializeVM();
   v8::HandleScope handle_scope;
@@ -1018,16 +1018,15 @@ TEST(CachedHashOverflow) {
       NULL
   };
 
-  Handle<Smi> fortytwo(Smi::FromInt(42));
-  Handle<Smi> thirtyseven(Smi::FromInt(37));
-  Handle<Object> results[] = {
-      FACTORY->undefined_value(),
-      fortytwo,
-      FACTORY->undefined_value(),
-      FACTORY->undefined_value(),
-      thirtyseven,
-      fortytwo,
-      thirtyseven  // Bug yielded 42 here.
+  Handle<Smi> fortytwo(Smi::FromInt(42), isolate);
+  Handle<Smi> thirtyseven(Smi::FromInt(37), isolate);
+  Handle<Object> results[] = { isolate->factory()->undefined_value(),
+                               fortytwo,
+                               isolate->factory()->undefined_value(),
+                               isolate->factory()->undefined_value(),
+                               thirtyseven,
+                               fortytwo,
+                               thirtyseven  // Bug yielded 42 here.
   };
 
   const char* line;
@@ -1099,7 +1098,7 @@ TEST(TrivialSlice) {
   // actually creates a new string (it should not).
   FLAG_string_slices = true;
   InitializeVM();
-  HandleScope scope;
+  v8::HandleScope scope;
   v8::Local<v8::Value> result;
   Handle<String> string;
   const char* init = "var str = 'abcdefghijklmnopqrstuvwxyz';";
@@ -1128,7 +1127,7 @@ TEST(SliceFromSlice) {
   // actually creates a new string (it should not).
   FLAG_string_slices = true;
   InitializeVM();
-  HandleScope scope;
+  v8::HandleScope scope;
   v8::Local<v8::Value> result;
   Handle<String> string;
   const char* init = "var str = 'abcdefghijklmnopqrstuvwxyz';";
@@ -1196,7 +1195,7 @@ TEST(RobustSubStringStub) {
   // If not recognized, those unsafe arguments lead to out-of-bounds reads.
   FLAG_allow_natives_syntax = true;
   InitializeVM();
-  HandleScope scope;
+  v8::HandleScope scope;
   v8::Local<v8::Value> result;
   Handle<String> string;
   CompileRun("var short = 'abcdef';");
@@ -1240,7 +1239,7 @@ TEST(RobustSubStringStub) {
 TEST(RegExpOverflow) {
   // Result string has the length 2^32, causing a 32-bit integer overflow.
   InitializeVM();
-  HandleScope scope;
+  v8::HandleScope scope;
   LocalContext context;
   v8::V8::IgnoreOutOfMemoryException();
   v8::Local<v8::Value> result = CompileRun(
@@ -1256,7 +1255,7 @@ TEST(RegExpOverflow) {
 
 TEST(StringReplaceAtomTwoByteResult) {
   InitializeVM();
-  HandleScope scope;
+  v8::HandleScope scope;
   LocalContext context;
   v8::Local<v8::Value> result = CompileRun(
       "var subject = 'ascii~only~string~'; "
@@ -1273,5 +1272,64 @@ TEST(StringReplaceAtomTwoByteResult) {
 
 TEST(IsAscii) {
   CHECK(String::IsAscii(static_cast<char*>(NULL), 0));
-  CHECK(String::IsAscii(static_cast<uc16*>(NULL), 0));
+  CHECK(String::IsOneByte(static_cast<uc16*>(NULL), 0));
 }
+
+
+
+#ifdef ENABLE_LATIN_1
+template<typename Op, bool return_first>
+static uint16_t ConvertLatin1(uint16_t c) {
+  uint32_t result[Op::kMaxWidth];
+  int chars;
+  chars = Op::Convert(c, 0, result, NULL);
+  if (chars == 0) return 0;
+  CHECK_LE(chars, static_cast<int>(sizeof(result)));
+  if (!return_first && chars > 1) {
+    return 0;
+  }
+  return result[0];
+}
+
+
+static void CheckCanonicalEquivalence(uint16_t c, uint16_t test) {
+  uint16_t expect = ConvertLatin1<unibrow::Ecma262UnCanonicalize, true>(c);
+  if (expect > unibrow::Latin1::kMaxChar) expect = 0;
+  CHECK_EQ(expect, test);
+}
+
+
+TEST(Latin1IgnoreCase) {
+  if (true) return;
+  using namespace unibrow;
+  for (uint16_t c = Latin1::kMaxChar + 1; c != 0; c++) {
+    uint16_t lower = ConvertLatin1<ToLowercase, false>(c);
+    uint16_t upper = ConvertLatin1<ToUppercase, false>(c);
+    uint16_t test = Latin1::ConvertNonLatin1ToLatin1(c);
+    // Filter out all character whose upper is not their lower or vice versa.
+    if (lower == 0 && upper == 0) {
+      CheckCanonicalEquivalence(c, test);
+      continue;
+    }
+    if (lower > Latin1::kMaxChar && upper > Latin1::kMaxChar) {
+      CheckCanonicalEquivalence(c, test);
+      continue;
+    }
+    if (lower == 0 && upper != 0) {
+      lower = ConvertLatin1<ToLowercase, false>(upper);
+    }
+    if (upper == 0 && lower != c) {
+      upper = ConvertLatin1<ToUppercase, false>(lower);
+    }
+    if (lower > Latin1::kMaxChar && upper > Latin1::kMaxChar) {
+      CheckCanonicalEquivalence(c, test);
+      continue;
+    }
+    if (upper != c && lower != c) {
+      CheckCanonicalEquivalence(c, test);
+      continue;
+    }
+    CHECK_EQ(Min(upper, lower), test);
+  }
+}
+#endif  // ENABLE_LATIN_1
