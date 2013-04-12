@@ -83,10 +83,6 @@ endif
 ifeq ($(gdbjit), on)
   GYPFLAGS += -Dv8_enable_gdbjit=1
 endif
-# liveobjectlist=on
-ifeq ($(liveobjectlist), on)
-  GYPFLAGS += -Dv8_use_liveobjectlist=true
-endif
 # vfp2=off
 ifeq ($(vfp2), off)
   GYPFLAGS += -Dv8_can_use_vfp2_instructions=false
@@ -152,7 +148,7 @@ endif
 ARCHES = ia32 x64 arm mipsel
 DEFAULT_ARCHES = ia32 x64 arm
 MODES = release debug
-ANDROID_ARCHES = android_ia32 android_arm
+ANDROID_ARCHES = android_ia32 android_arm android_mipsel
 
 # List of files that trigger Makefile regeneration:
 GYPFILES = build/all.gyp build/common.gypi build/standalone.gypi \

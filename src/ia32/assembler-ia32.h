@@ -142,6 +142,7 @@ inline Register Register::FromAllocationIndex(int index)  {
 
 
 struct IntelDoubleRegister {
+  static const int kMaxNumRegisters = 8;
   static const int kMaxNumAllocatableRegisters = 7;
   static int NumAllocatableRegisters();
   static int NumRegisters();
@@ -337,12 +338,12 @@ class Immediate BASE_EMBEDDED {
     return Immediate(label);
   }
 
-  bool is_zero() const { return x_ == 0 && rmode_ == RelocInfo::NONE; }
+  bool is_zero() const { return x_ == 0 && RelocInfo::IsNone(rmode_); }
   bool is_int8() const {
-    return -128 <= x_ && x_ < 128 && rmode_ == RelocInfo::NONE;
+    return -128 <= x_ && x_ < 128 && RelocInfo::IsNone(rmode_);
   }
   bool is_int16() const {
-    return -32768 <= x_ && x_ < 32768 && rmode_ == RelocInfo::NONE;
+    return -32768 <= x_ && x_ < 32768 && RelocInfo::IsNone(rmode_);
   }
 
  private:
@@ -382,20 +383,20 @@ class Operand BASE_EMBEDDED {
 
   // [base + disp/r]
   explicit Operand(Register base, int32_t disp,
-                   RelocInfo::Mode rmode = RelocInfo::NONE);
+                   RelocInfo::Mode rmode = RelocInfo::NONE32);
 
   // [base + index*scale + disp/r]
   explicit Operand(Register base,
                    Register index,
                    ScaleFactor scale,
                    int32_t disp,
-                   RelocInfo::Mode rmode = RelocInfo::NONE);
+                   RelocInfo::Mode rmode = RelocInfo::NONE32);
 
   // [index*scale + disp/r]
   explicit Operand(Register index,
                    ScaleFactor scale,
                    int32_t disp,
-                   RelocInfo::Mode rmode = RelocInfo::NONE);
+                   RelocInfo::Mode rmode = RelocInfo::NONE32);
 
   static Operand StaticVariable(const ExternalReference& ext) {
     return Operand(reinterpret_cast<int32_t>(ext.address()),
@@ -611,6 +612,7 @@ class CpuFeatures : public AllStatic {
   static uint64_t supported_;
   static uint64_t found_by_runtime_probing_;
 
+  friend class ExternalReference;
   DISALLOW_COPY_AND_ASSIGN(CpuFeatures);
 };
 

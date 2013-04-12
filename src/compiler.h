@@ -79,6 +79,7 @@ class CompilationInfo {
   ScriptDataImpl* pre_parse_data() const { return pre_parse_data_; }
   Handle<Context> context() const { return context_; }
   BailoutId osr_ast_id() const { return osr_ast_id_; }
+  int opt_count() const { return opt_count_; }
   int num_parameters() const;
   int num_heap_slots() const;
   Code::Flags flags() const;
@@ -127,6 +128,14 @@ class CompilationInfo {
 
   bool is_non_deferred_calling() const {
     return IsNonDeferredCalling::decode(flags_);
+  }
+
+  void MarkAsSavesCallerDoubles() {
+    flags_ |= SavesCallerDoubles::encode(true);
+  }
+
+  bool saves_caller_doubles() const {
+    return SavesCallerDoubles::decode(flags_);
   }
 
   void SetFunction(FunctionLiteral* literal) {
@@ -274,6 +283,8 @@ class CompilationInfo {
   class IsDeferredCalling: public BitField<bool, 10, 1> {};
   // If the compiled code contains calls that require building a frame
   class IsNonDeferredCalling: public BitField<bool, 11, 1> {};
+  // If the compiled code saves double caller registers that it clobbers.
+  class SavesCallerDoubles: public BitField<bool, 12, 1> {};
 
 
   unsigned flags_;
@@ -325,6 +336,10 @@ class CompilationInfo {
   const char* bailout_reason_;
 
   int prologue_offset_;
+
+  // A copy of shared_info()->opt_count() to avoid handle deref
+  // during graph optimization.
+  int opt_count_;
 
   DISALLOW_COPY_AND_ASSIGN(CompilationInfo);
 };
@@ -409,6 +424,7 @@ class OptimizingCompiler: public ZoneObject {
 
   Status last_status() const { return last_status_; }
   CompilationInfo* info() const { return info_; }
+  Isolate* isolate() const { return info()->isolate(); }
 
   MUST_USE_RESULT Status AbortOptimization() {
     info_->AbortOptimization();

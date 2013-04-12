@@ -209,6 +209,7 @@ namespace internal {
   V(char_at_symbol, "CharAt")                                            \
   V(undefined_symbol, "undefined")                                       \
   V(value_of_symbol, "valueOf")                                          \
+  V(stack_symbol, "stack")                                               \
   V(InitializeVarGlobal_symbol, "InitializeVarGlobal")                   \
   V(InitializeConstGlobal_symbol, "InitializeConstGlobal")               \
   V(KeyedLoadElementMonomorphic_symbol,                                  \
@@ -223,6 +224,9 @@ namespace internal {
   V(illegal_execution_state_symbol, "illegal execution state")           \
   V(get_symbol, "get")                                                   \
   V(set_symbol, "set")                                                   \
+  V(map_field_symbol, "%map")                                            \
+  V(elements_field_symbol, "%elements")                                  \
+  V(length_field_symbol, "%length")                                      \
   V(function_class_symbol, "Function")                                   \
   V(illegal_argument_symbol, "illegal argument")                         \
   V(MakeReferenceError_symbol, "MakeReferenceError")                     \
@@ -427,6 +431,41 @@ class ExternalStringTable {
 };
 
 
+// The stack property of an error object is implemented as a getter that
+// formats the attached raw stack trace into a string.  This raw stack trace
+// keeps code and function objects alive until the getter is called the first
+// time.  To release those objects, we call the getter after each GC for
+// newly tenured error objects that are kept in a list.
+class ErrorObjectList {
+ public:
+  inline void Add(JSObject* object);
+
+  inline void Iterate(ObjectVisitor* v);
+
+  void TearDown();
+
+  void RemoveUnmarked(Heap* heap);
+
+  void DeferredFormatStackTrace(Isolate* isolate);
+
+  void UpdateReferences();
+
+  void UpdateReferencesInNewSpace(Heap* heap);
+
+ private:
+  static const int kBudgetPerGC = 16;
+
+  ErrorObjectList() : nested_(false) { }
+
+  friend class Heap;
+
+  List<Object*> list_;
+  bool nested_;
+
+  DISALLOW_COPY_AND_ASSIGN(ErrorObjectList);
+};
+
+
 enum ArrayStorageAllocationMode {
   DONT_INITIALIZE_ARRAY_ELEMENTS,
   INITIALIZE_ARRAY_ELEMENTS_WITH_HOLE
@@ -441,10 +480,13 @@ class Heap {
                      intptr_t max_executable_size);
   bool ConfigureHeapDefault();
 
-  // Initializes the global object heap. If create_heap_objects is true,
-  // also creates the basic non-mutable objects.
+  // Prepares the heap, setting up memory areas that are needed in the isolate
+  // without actually creating any objects.
+  bool SetUp();
+
+  // Bootstraps the object heap with the core set of objects required to run.
   // Returns whether it succeeded.
-  bool SetUp(bool create_heap_objects);
+  bool CreateHeapObjects();
 
   // Destroys all memory allocated by the heap.
   void TearDown();
@@ -588,7 +630,9 @@ class Heap {
   // Returns a deep copy of the JavaScript object.
   // Properties and elements are copied too.
   // Returns failure if allocation failed.
-  MUST_USE_RESULT MaybeObject* CopyJSObject(JSObject* source);
+  MUST_USE_RESULT MaybeObject* CopyJSObject(
+      JSObject* source,
+      AllocationSiteMode mode = DONT_TRACK_ALLOCATION_SITE);
 
   // Allocates the function prototype.
   // Returns Failure::RetryAfterGC(requested_bytes, space) if the allocation
@@ -699,8 +743,15 @@ class Heap {
   // failed.
   // Please note this does not perform a garbage collection.
   MUST_USE_RESULT MaybeObject* AllocateStringFromOneByte(
-      Vector<const char> str,
+      Vector<const uint8_t> str,
       PretenureFlag pretenure = NOT_TENURED);
+  // TODO(dcarney): remove this function.
+  MUST_USE_RESULT inline MaybeObject* AllocateStringFromOneByte(
+      Vector<const char> str,
+      PretenureFlag pretenure = NOT_TENURED) {
+    return AllocateStringFromOneByte(Vector<const uint8_t>::cast(str),
+                                     pretenure);
+  }
   MUST_USE_RESULT inline MaybeObject* AllocateStringFromUtf8(
       Vector<const char> str,
       PretenureFlag pretenure = NOT_TENURED);
@@ -716,12 +767,13 @@ class Heap {
   // Returns Failure::RetryAfterGC(requested_bytes, space) if the allocation
   // failed.
   // Please note this function does not perform a garbage collection.
-  MUST_USE_RESULT inline MaybeObject* AllocateSymbol(Vector<const char> str,
-                                                     int chars,
-                                                     uint32_t hash_field);
+  MUST_USE_RESULT inline MaybeObject* AllocateSymbolFromUtf8(
+      Vector<const char> str,
+      int chars,
+      uint32_t hash_field);
 
-  MUST_USE_RESULT inline MaybeObject* AllocateAsciiSymbol(
-        Vector<const char> str,
+  MUST_USE_RESULT inline MaybeObject* AllocateOneByteSymbol(
+        Vector<const uint8_t> str,
         uint32_t hash_field);
 
   MUST_USE_RESULT inline MaybeObject* AllocateTwoByteSymbol(
@@ -804,6 +856,10 @@ class Heap {
   // failed.
   // Please note this does not perform a garbage collection.
   MUST_USE_RESULT MaybeObject* AllocateUninitializedFixedArray(int length);
+
+  // Move len elements within a given array from src_index index to dst_index
+  // index.
+  void MoveElements(FixedArray* array, int dst_index, int src_index, int len);
 
   // Make a copy of src and return it. Returns
   // Failure::RetryAfterGC(requested_bytes, space) if the allocation failed.
@@ -1038,7 +1094,7 @@ class Heap {
   MUST_USE_RESULT MaybeObject* LookupUtf8Symbol(const char* str) {
     return LookupUtf8Symbol(CStrVector(str));
   }
-  MUST_USE_RESULT MaybeObject* LookupOneByteSymbol(Vector<const char> str);
+  MUST_USE_RESULT MaybeObject* LookupOneByteSymbol(Vector<const uint8_t> str);
   MUST_USE_RESULT MaybeObject* LookupTwoByteSymbol(Vector<const uc16> str);
   MUST_USE_RESULT MaybeObject* LookupSymbol(String* str);
   MUST_USE_RESULT MaybeObject* LookupOneByteSymbol(
@@ -1272,6 +1328,11 @@ class Heap {
 #ifdef VERIFY_HEAP
   // Verify the heap is in its normal state before or after a GC.
   void Verify();
+
+
+  bool weak_embedded_maps_verification_enabled() {
+    return no_weak_embedded_maps_verification_scope_depth_ == 0;
+  }
 #endif
 
 #ifdef DEBUG
@@ -1315,16 +1376,13 @@ class Heap {
   MUST_USE_RESULT MaybeObject* CreateSymbol(String* str);
 
   // Write barrier support for address[offset] = o.
-  inline void RecordWrite(Address address, int offset);
+  INLINE(void RecordWrite(Address address, int offset));
 
   // Write barrier support for address[start : start + len[ = o.
-  inline void RecordWrites(Address address, int start, int len);
+  INLINE(void RecordWrites(Address address, int start, int len));
 
   // Given an address occupied by a live code object, return that object.
   Object* FindCodeObject(Address a);
-
-  // Invoke Shrink on shrinkable spaces.
-  void Shrink();
 
   enum HeapState { NOT_IN_GC, SCAVENGE, MARK_COMPACT };
   inline HeapState gc_state() { return gc_state_; }
@@ -1538,13 +1596,31 @@ class Heap {
   }
 
   // Returns maximum GC pause.
-  int get_max_gc_pause() { return max_gc_pause_; }
+  double get_max_gc_pause() { return max_gc_pause_; }
 
   // Returns maximum size of objects alive after GC.
   intptr_t get_max_alive_after_gc() { return max_alive_after_gc_; }
 
   // Returns minimal interval between two subsequent collections.
-  int get_min_in_mutator() { return min_in_mutator_; }
+  double get_min_in_mutator() { return min_in_mutator_; }
+
+  // TODO(hpayer): remove, should be handled by GCTracer
+  void AddMarkingTime(double marking_time) {
+    marking_time_ += marking_time;
+  }
+
+  double marking_time() const {
+    return marking_time_;
+  }
+
+  // TODO(hpayer): remove, should be handled by GCTracer
+  void AddSweepingTime(double sweeping_time) {
+    sweeping_time_ += sweeping_time;
+  }
+
+  double sweeping_time() const {
+    return sweeping_time_;
+  }
 
   MarkCompactCollector* mark_compact_collector() {
     return &mark_compact_collector_;
@@ -1563,11 +1639,13 @@ class Heap {
   }
 
   bool IsSweepingComplete() {
-    return old_data_space()->IsSweepingComplete() &&
-           old_pointer_space()->IsSweepingComplete();
+    return !mark_compact_collector()->IsConcurrentSweepingInProgress() &&
+           old_data_space()->IsLazySweepingComplete() &&
+           old_pointer_space()->IsLazySweepingComplete();
   }
 
   bool AdvanceSweepers(int step_size) {
+    ASSERT(!FLAG_parallel_sweeping && !FLAG_concurrent_sweeping);
     bool sweeping_complete = old_data_space()->AdvanceSweeper(step_size);
     sweeping_complete &= old_pointer_space()->AdvanceSweeper(step_size);
     return sweeping_complete;
@@ -1577,6 +1655,10 @@ class Heap {
     return &external_string_table_;
   }
 
+  ErrorObjectList* error_object_list() {
+    return &error_object_list_;
+  }
+
   // Returns the current sweep generation.
   int sweep_generation() {
     return sweep_generation_;
@@ -1584,13 +1666,8 @@ class Heap {
 
   inline Isolate* isolate();
 
-  inline void CallGlobalGCPrologueCallback() {
-    if (global_gc_prologue_callback_ != NULL) global_gc_prologue_callback_();
-  }
-
-  inline void CallGlobalGCEpilogueCallback() {
-    if (global_gc_epilogue_callback_ != NULL) global_gc_epilogue_callback_();
-  }
+  void CallGCPrologueCallbacks(GCType gc_type);
+  void CallGCEpilogueCallbacks(GCType gc_type);
 
   inline bool OldGenerationAllocationLimitReached();
 
@@ -1986,7 +2063,6 @@ class Heap {
 
   GCTracer* tracer_;
 
-
   // Allocates a small number to string cache.
   MUST_USE_RESULT MaybeObject* AllocateInitialNumberStringCache();
   // Creates and installs the full-sized number string cache.
@@ -2108,21 +2184,27 @@ class Heap {
   size_t object_sizes_last_time_[OBJECT_STATS_COUNT];
 
   // Maximum GC pause.
-  int max_gc_pause_;
+  double max_gc_pause_;
 
   // Total time spent in GC.
-  int total_gc_time_ms_;
+  double total_gc_time_ms_;
 
   // Maximum size of objects alive after GC.
   intptr_t max_alive_after_gc_;
 
   // Minimal interval between two subsequent collections.
-  int min_in_mutator_;
+  double min_in_mutator_;
 
   // Size of objects alive after last GC.
   intptr_t alive_after_last_gc_;
 
   double last_gc_end_timestamp_;
+
+  // Cumulative GC time spent in marking
+  double marking_time_;
+
+  // Cumulative GC time spent in sweeping
+  double sweeping_time_;
 
   MarkCompactCollector mark_compact_collector_;
 
@@ -2141,6 +2223,10 @@ class Heap {
   unsigned int gc_count_at_last_idle_gc_;
   int scavenges_since_last_idle_round_;
 
+#ifdef VERIFY_HEAP
+  int no_weak_embedded_maps_verification_scope_depth_;
+#endif
+
   static const int kMaxMarkSweepsInIdleRound = 7;
   static const int kIdleScavengeThreshold = 5;
 
@@ -2152,6 +2238,8 @@ class Heap {
   bool configured_;
 
   ExternalStringTable external_string_table_;
+
+  ErrorObjectList error_object_list_;
 
   VisitorDispatchTable<ScavengingCallback> scavenging_visitors_table_;
 
@@ -2168,6 +2256,9 @@ class Heap {
   friend class MarkCompactCollector;
   friend class MarkCompactMarkingVisitor;
   friend class MapCompact;
+#ifdef VERIFY_HEAP
+  friend class NoWeakEmbeddedMapsVerificationScope;
+#endif
 
   DISALLOW_COPY_AND_ASSIGN(Heap);
 };
@@ -2228,6 +2319,14 @@ class AlwaysAllocateScope {
   DisallowAllocationFailure disallow_allocation_failure_;
 };
 
+#ifdef VERIFY_HEAP
+class NoWeakEmbeddedMapsVerificationScope {
+ public:
+  inline NoWeakEmbeddedMapsVerificationScope();
+  inline ~NoWeakEmbeddedMapsVerificationScope();
+};
+#endif
+
 
 // Visitor class to verify interior pointers in spaces that do not contain
 // or care about intergenerational references. All heap object pointers have to
@@ -2240,37 +2339,40 @@ class VerifyPointersVisitor: public ObjectVisitor {
 };
 
 
-// Space iterator for iterating over all spaces of the heap.
-// Returns each space in turn, and null when it is done.
+// Space iterator for iterating over all spaces of the heap.  Returns each space
+// in turn, and null when it is done.
 class AllSpaces BASE_EMBEDDED {
  public:
+  explicit AllSpaces(Heap* heap) : heap_(heap), counter_(FIRST_SPACE) {}
   Space* next();
-  AllSpaces() { counter_ = FIRST_SPACE; }
  private:
+  Heap* heap_;
   int counter_;
 };
 
 
 // Space iterator for iterating over all old spaces of the heap: Old pointer
-// space, old data space and code space.
-// Returns each space in turn, and null when it is done.
+// space, old data space and code space.  Returns each space in turn, and null
+// when it is done.
 class OldSpaces BASE_EMBEDDED {
  public:
+  explicit OldSpaces(Heap* heap) : heap_(heap), counter_(OLD_POINTER_SPACE) {}
   OldSpace* next();
-  OldSpaces() { counter_ = OLD_POINTER_SPACE; }
  private:
+  Heap* heap_;
   int counter_;
 };
 
 
-// Space iterator for iterating over all the paged spaces of the heap:
-// Map space, old pointer space, old data space, code space and cell space.
-// Returns each space in turn, and null when it is done.
+// Space iterator for iterating over all the paged spaces of the heap: Map
+// space, old pointer space, old data space, code space and cell space.  Returns
+// each space in turn, and null when it is done.
 class PagedSpaces BASE_EMBEDDED {
  public:
+  explicit PagedSpaces(Heap* heap) : heap_(heap), counter_(OLD_POINTER_SPACE) {}
   PagedSpace* next();
-  PagedSpaces() { counter_ = OLD_POINTER_SPACE; }
  private:
+  Heap* heap_;
   int counter_;
 };
 
@@ -2280,8 +2382,8 @@ class PagedSpaces BASE_EMBEDDED {
 // returned object iterators is handled by the space iterator.
 class SpaceIterator : public Malloced {
  public:
-  SpaceIterator();
-  explicit SpaceIterator(HeapObjectCallback size_func);
+  explicit SpaceIterator(Heap* heap);
+  SpaceIterator(Heap* heap, HeapObjectCallback size_func);
   virtual ~SpaceIterator();
 
   bool has_next();
@@ -2290,6 +2392,7 @@ class SpaceIterator : public Malloced {
  private:
   ObjectIterator* CreateIterator();
 
+  Heap* heap_;
   int current_space_;  // from enum AllocationSpace.
   ObjectIterator* iterator_;  // object iterator for the current space.
   HeapObjectCallback size_func_;
@@ -2314,8 +2417,8 @@ class HeapIterator BASE_EMBEDDED {
     kFilterUnreachable
   };
 
-  HeapIterator();
-  explicit HeapIterator(HeapObjectsFiltering filtering);
+  explicit HeapIterator(Heap* heap);
+  HeapIterator(Heap* heap, HeapObjectsFiltering filtering);
   ~HeapIterator();
 
   HeapObject* next();
@@ -2328,6 +2431,7 @@ class HeapIterator BASE_EMBEDDED {
   void Shutdown();
   HeapObject* NextObject();
 
+  Heap* heap_;
   HeapObjectsFiltering filtering_;
   HeapObjectsFilter* filter_;
   // Space iterator for iterating all the spaces.
@@ -2786,7 +2890,7 @@ class IntrusiveMarking {
 };
 
 
-#if defined(DEBUG) || defined(LIVE_OBJECT_LIST)
+#ifdef DEBUG
 // Helper class for tracing paths to a search target Object from all roots.
 // The TracePathFrom() method can be used to trace paths from a specific
 // object to the search target object.
@@ -2843,7 +2947,7 @@ class PathTracer : public ObjectVisitor {
  private:
   DISALLOW_IMPLICIT_CONSTRUCTORS(PathTracer);
 };
-#endif  // DEBUG || LIVE_OBJECT_LIST
+#endif  // DEBUG
 
 } }  // namespace v8::internal
 

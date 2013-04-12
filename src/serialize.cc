@@ -444,15 +444,15 @@ void ExternalReferenceTable::PopulateTable(Isolate* isolate) {
       UNCLASSIFIED,
       30,
       "TranscendentalCache::caches()");
-  Add(ExternalReference::handle_scope_next_address().address(),
+  Add(ExternalReference::handle_scope_next_address(isolate).address(),
       UNCLASSIFIED,
       31,
       "HandleScope::next");
-  Add(ExternalReference::handle_scope_limit_address().address(),
+  Add(ExternalReference::handle_scope_limit_address(isolate).address(),
       UNCLASSIFIED,
       32,
       "HandleScope::limit");
-  Add(ExternalReference::handle_scope_level_address().address(),
+  Add(ExternalReference::handle_scope_level_address(isolate).address(),
       UNCLASSIFIED,
       33,
       "HandleScope::level");
@@ -528,16 +528,33 @@ void ExternalReferenceTable::PopulateTable(Isolate* isolate) {
       UNCLASSIFIED,
       51,
       "Code::MakeCodeYoung");
+  Add(ExternalReference::cpu_features().address(),
+      UNCLASSIFIED,
+      52,
+      "cpu_features");
+  Add(ExternalReference::new_space_allocation_top_address(isolate).address(),
+      UNCLASSIFIED,
+      53,
+      "Heap::NewSpaceAllocationTopAddress");
+  Add(ExternalReference::new_space_allocation_limit_address(isolate).address(),
+      UNCLASSIFIED,
+      54,
+      "Heap::NewSpaceAllocationLimitAddress");
+  Add(ExternalReference(Runtime::kAllocateInNewSpace, isolate).address(),
+      UNCLASSIFIED,
+      55,
+      "Runtime::AllocateInNewSpace");
 
   // Add a small set of deopt entry addresses to encoder without generating the
   // deopt table code, which isn't possible at deserialization time.
-  HandleScope scope(Isolate::Current());
+  HandleScope scope(isolate);
   for (int entry = 0; entry < kDeoptTableSerializeEntryCount; ++entry) {
     Address address = Deoptimizer::GetDeoptimizationEntry(
+        isolate,
         entry,
         Deoptimizer::LAZY,
         Deoptimizer::CALCULATE_ENTRY_ADDRESS);
-    Add(address, LAZY_DEOPTIMIZATION, 52 + entry, "lazy_deopt");
+    Add(address, LAZY_DEOPTIMIZATION, 56 + entry, "lazy_deopt");
   }
 }
 

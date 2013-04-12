@@ -86,12 +86,12 @@ void CodeGenerator::MakeCodePrologue(CompilationInfo* info) {
     PrintF(" ***\n");
   }
 
-  if (print_source) {
+  if (!info->IsStub() && print_source) {
     PrintF("--- Source from AST ---\n%s\n",
            PrettyPrinter().PrintProgram(info->function()));
   }
 
-  if (print_ast) {
+  if (!info->IsStub() && print_ast) {
     PrintF("--- AST ---\n%s\n",
            AstPrinter().PrintProgram(info->function()));
   }
@@ -123,7 +123,9 @@ void CodeGenerator::PrintCode(Handle<Code> code, CompilationInfo* info) {
 #ifdef ENABLE_DISASSEMBLER
   bool print_code = Isolate::Current()->bootstrapper()->IsActive()
       ? FLAG_print_builtin_code
-      : (FLAG_print_code || (info->IsOptimizing() && FLAG_print_opt_code));
+      : (FLAG_print_code ||
+         (info->IsStub() && FLAG_print_code_stubs) ||
+         (info->IsOptimizing() && FLAG_print_opt_code));
   if (print_code) {
     // Print the source code if available.
     FunctionLiteral* function = info->function();
@@ -174,7 +176,7 @@ bool CodeGenerator::ShouldGenerateLog(Expression* type) {
   }
   Handle<String> name = Handle<String>::cast(type->AsLiteral()->handle());
   if (FLAG_log_regexp) {
-    if (name->IsEqualTo(CStrVector("regexp")))
+    if (name->IsOneByteEqualTo(STATIC_ASCII_VECTOR("regexp")))
       return true;
   }
   return false;

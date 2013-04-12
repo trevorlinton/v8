@@ -33,9 +33,33 @@
 #include "code-stubs.h"
 #include "codegen.h"
 #include "regexp-macro-assembler.h"
+#include "stub-cache.h"
 
 namespace v8 {
 namespace internal {
+
+
+void KeyedLoadFastElementStub::InitializeInterfaceDescriptor(
+    Isolate* isolate,
+    CodeStubInterfaceDescriptor* descriptor) {
+  static Register registers[] = { a1, a0 };
+  descriptor->register_param_count_ = 2;
+  descriptor->register_params_ = registers;
+  descriptor->deoptimization_handler_ =
+      FUNCTION_ADDR(KeyedLoadIC_MissFromStubFailure);
+}
+
+
+void TransitionElementsKindStub::InitializeInterfaceDescriptor(
+    Isolate* isolate,
+    CodeStubInterfaceDescriptor* descriptor) {
+  static Register registers[] = { a0, a1 };
+  descriptor->register_param_count_ = 2;
+  descriptor->register_params_ = registers;
+  Address entry =
+      Runtime::FunctionForId(Runtime::kTransitionElementsKind)->entry;
+  descriptor->deoptimization_handler_ = FUNCTION_ADDR(entry);
+}
 
 
 #define __ ACCESS_MASM(masm)
@@ -332,6 +356,7 @@ static void GenerateFastCloneShallowArrayCommon(
     MacroAssembler* masm,
     int length,
     FastCloneShallowArrayStub::Mode mode,
+    AllocationSiteMode allocation_site_mode,
     Label* fail) {
   // Registers on entry:
   // a3: boilerplate literal array.
@@ -344,7 +369,13 @@ static void GenerateFastCloneShallowArrayCommon(
         ? FixedDoubleArray::SizeFor(length)
         : FixedArray::SizeFor(length);
   }
-  int size = JSArray::kSize + elements_size;
+
+  int size = JSArray::kSize;
+  int allocation_info_start = size;
+  if (allocation_site_mode == TRACK_ALLOCATION_SITE) {
+    size += AllocationSiteInfo::kSize;
+  }
+  size += elements_size;
 
   // Allocate both the JS array and the elements array in one big
   // allocation. This avoids multiple limit checks.
@@ -354,6 +385,13 @@ static void GenerateFastCloneShallowArrayCommon(
                         a2,
                         fail,
                         TAG_OBJECT);
+
+  if (allocation_site_mode == TRACK_ALLOCATION_SITE) {
+    __ li(a2, Operand(Handle<Map>(masm->isolate()->heap()->
+                                   allocation_site_info_map())));
+    __ sw(a2, FieldMemOperand(v0, allocation_info_start));
+    __ sw(a3, FieldMemOperand(v0, allocation_info_start + kPointerSize));
+  }
 
   // Copy the JS array part.
   for (int i = 0; i < JSArray::kSize; i += kPointerSize) {
@@ -367,7 +405,11 @@ static void GenerateFastCloneShallowArrayCommon(
     // Get hold of the elements array of the boilerplate and setup the
     // elements pointer in the resulting object.
     __ lw(a3, FieldMemOperand(a3, JSArray::kElementsOffset));
-    __ Addu(a2, v0, Operand(JSArray::kSize));
+    if (allocation_site_mode == TRACK_ALLOCATION_SITE) {
+      __ Addu(a2, v0, Operand(JSArray::kSize + AllocationSiteInfo::kSize));
+    } else {
+      __ Addu(a2, v0, Operand(JSArray::kSize));
+    }
     __ sw(a2, FieldMemOperand(v0, JSArray::kElementsOffset));
 
     // Copy the elements array.
@@ -402,16 +444,18 @@ void FastCloneShallowArrayStub::Generate(MacroAssembler* masm) {
     __ lw(v0, FieldMemOperand(v0, HeapObject::kMapOffset));
     __ LoadRoot(t1, Heap::kFixedCOWArrayMapRootIndex);
     __ Branch(&check_fast_elements, ne, v0, Operand(t1));
-    GenerateFastCloneShallowArrayCommon(masm, 0,
-                                        COPY_ON_WRITE_ELEMENTS, &slow_case);
+    GenerateFastCloneShallowArrayCommon(masm, 0, COPY_ON_WRITE_ELEMENTS,
+                                        allocation_site_mode_,
+                                        &slow_case);
     // Return and remove the on-stack parameters.
     __ DropAndRet(3);
 
     __ bind(&check_fast_elements);
     __ LoadRoot(t1, Heap::kFixedArrayMapRootIndex);
     __ Branch(&double_elements, ne, v0, Operand(t1));
-    GenerateFastCloneShallowArrayCommon(masm, length_,
-                                        CLONE_ELEMENTS, &slow_case);
+    GenerateFastCloneShallowArrayCommon(masm, length_, CLONE_ELEMENTS,
+                                        allocation_site_mode_,
+                                        &slow_case);
     // Return and remove the on-stack parameters.
     __ DropAndRet(3);
 
@@ -442,7 +486,9 @@ void FastCloneShallowArrayStub::Generate(MacroAssembler* masm) {
     __ pop(a3);
   }
 
-  GenerateFastCloneShallowArrayCommon(masm, length_, mode, &slow_case);
+  GenerateFastCloneShallowArrayCommon(masm, length_, mode,
+                                      allocation_site_mode_,
+                                      &slow_case);
 
   // Return and remove the on-stack parameters.
   __ DropAndRet(3);
@@ -500,7 +546,7 @@ void FastCloneShallowObjectStub::Generate(MacroAssembler* masm) {
 // 52 fraction bits (20 in the first word, 32 in the second).  Zeros is a
 // scratch register.  Destroys the source register.  No GC occurs during this
 // stub so you don't have to set up the frame.
-class ConvertToDoubleStub : public CodeStub {
+class ConvertToDoubleStub : public PlatformCodeStub {
  public:
   ConvertToDoubleStub(Register result_reg_1,
                       Register result_reg_2,
@@ -616,11 +662,11 @@ void FloatingPointHelper::LoadSmis(MacroAssembler* masm,
     __ mov(scratch1, a0);
     ConvertToDoubleStub stub1(a3, a2, scratch1, scratch2);
     __ push(ra);
-    __ Call(stub1.GetCode());
+    __ Call(stub1.GetCode(masm->isolate()));
     // Write Smi from a1 to a1 and a0 in double format.
     __ mov(scratch1, a1);
     ConvertToDoubleStub stub2(a1, a0, scratch1, scratch2);
-    __ Call(stub2.GetCode());
+    __ Call(stub2.GetCode(masm->isolate()));
     __ pop(ra);
   }
 }
@@ -683,7 +729,7 @@ void FloatingPointHelper::LoadNumber(MacroAssembler* masm,
     __ mov(scratch1, object);
     ConvertToDoubleStub stub(dst2, dst1, scratch1, scratch2);
     __ push(ra);
-    __ Call(stub.GetCode());
+    __ Call(stub.GetCode(masm->isolate()));
     __ pop(ra);
   }
 
@@ -1134,11 +1180,12 @@ bool WriteInt32ToHeapNumberStub::IsPregenerated() {
 }
 
 
-void WriteInt32ToHeapNumberStub::GenerateFixedRegStubsAheadOfTime() {
+void WriteInt32ToHeapNumberStub::GenerateFixedRegStubsAheadOfTime(
+    Isolate* isolate) {
   WriteInt32ToHeapNumberStub stub1(a1, v0, a2, a3);
   WriteInt32ToHeapNumberStub stub2(a2, v0, a3, a0);
-  stub1.GetCode()->set_is_pregenerated(true);
-  stub2.GetCode()->set_is_pregenerated(true);
+  stub1.GetCode(isolate)->set_is_pregenerated(true);
+  stub2.GetCode(isolate)->set_is_pregenerated(true);
 }
 
 
@@ -1335,7 +1382,7 @@ static void EmitSmiNonsmiComparison(MacroAssembler* masm,
     __ mov(t6, rhs);
     ConvertToDoubleStub stub1(a1, a0, t6, t5);
     __ push(ra);
-    __ Call(stub1.GetCode());
+    __ Call(stub1.GetCode(masm->isolate()));
 
     __ pop(ra);
   }
@@ -1370,7 +1417,7 @@ static void EmitSmiNonsmiComparison(MacroAssembler* masm,
     __ mov(t6, lhs);
     ConvertToDoubleStub stub2(a3, a2, t6, t5);
     __ push(ra);
-    __ Call(stub2.GetCode());
+    __ Call(stub2.GetCode(masm->isolate()));
     __ pop(ra);
     // Load rhs to a double in a1, a0.
     if (rhs.is(a0)) {
@@ -2337,7 +2384,7 @@ void UnaryOpStub::GenerateHeapNumberCodeBitNot(
     // WriteInt32ToHeapNumberStub does not trigger GC, so we do not
     // have to set up a frame.
     WriteInt32ToHeapNumberStub stub(a1, v0, a2, a3);
-    __ Jump(stub.GetCode(), RelocInfo::CODE_TARGET);
+    __ Jump(stub.GetCode(masm->isolate()), RelocInfo::CODE_TARGET);
   }
 
   __ bind(&impossible);
@@ -3884,28 +3931,56 @@ bool CEntryStub::IsPregenerated() {
 }
 
 
-void CodeStub::GenerateStubsAheadOfTime() {
-  CEntryStub::GenerateAheadOfTime();
-  WriteInt32ToHeapNumberStub::GenerateFixedRegStubsAheadOfTime();
-  StoreBufferOverflowStub::GenerateFixedRegStubsAheadOfTime();
-  RecordWriteStub::GenerateFixedRegStubsAheadOfTime();
+void CodeStub::GenerateStubsAheadOfTime(Isolate* isolate) {
+  CEntryStub::GenerateAheadOfTime(isolate);
+  WriteInt32ToHeapNumberStub::GenerateFixedRegStubsAheadOfTime(isolate);
+  StoreBufferOverflowStub::GenerateFixedRegStubsAheadOfTime(isolate);
+  RecordWriteStub::GenerateFixedRegStubsAheadOfTime(isolate);
 }
 
 
-void CodeStub::GenerateFPStubs() {
-  CEntryStub save_doubles(1, kSaveFPRegs);
-  Handle<Code> code = save_doubles.GetCode();
-  code->set_is_pregenerated(true);
-  StoreBufferOverflowStub stub(kSaveFPRegs);
-  stub.GetCode()->set_is_pregenerated(true);
-  code->GetIsolate()->set_fp_stubs_generated(true);
+void CodeStub::GenerateFPStubs(Isolate* isolate) {
+  SaveFPRegsMode mode = CpuFeatures::IsSupported(FPU)
+      ? kSaveFPRegs
+      : kDontSaveFPRegs;
+  CEntryStub save_doubles(1, mode);
+  StoreBufferOverflowStub stub(mode);
+  // These stubs might already be in the snapshot, detect that and don't
+  // regenerate, which would lead to code stub initialization state being messed
+  // up.
+  Code* save_doubles_code = NULL;
+  Code* store_buffer_overflow_code = NULL;
+  if (!save_doubles.FindCodeInCache(&save_doubles_code, ISOLATE)) {
+    if (CpuFeatures::IsSupported(FPU)) {
+      CpuFeatures::Scope scope2(FPU);
+      save_doubles_code = *save_doubles.GetCode(isolate);
+      store_buffer_overflow_code = *stub.GetCode(isolate);
+    } else {
+      save_doubles_code = *save_doubles.GetCode(isolate);
+      store_buffer_overflow_code = *stub.GetCode(isolate);
+    }
+    save_doubles_code->set_is_pregenerated(true);
+    store_buffer_overflow_code->set_is_pregenerated(true);
+  }
+  ISOLATE->set_fp_stubs_generated(true);
 }
 
 
-void CEntryStub::GenerateAheadOfTime() {
+void CEntryStub::GenerateAheadOfTime(Isolate* isolate) {
   CEntryStub stub(1, kDontSaveFPRegs);
-  Handle<Code> code = stub.GetCode();
+  Handle<Code> code = stub.GetCode(isolate);
   code->set_is_pregenerated(true);
+}
+
+
+static void JumpIfOOM(MacroAssembler* masm,
+                      Register value,
+                      Register scratch,
+                      Label* oom_label) {
+  STATIC_ASSERT(Failure::OUT_OF_MEMORY_EXCEPTION == 3);
+  STATIC_ASSERT(kFailureTag == 3);
+  __ andi(scratch, value, 0xf);
+  __ Branch(oom_label, eq, scratch, Operand(0xf));
 }
 
 
@@ -4015,14 +4090,7 @@ void CEntryStub::GenerateCore(MacroAssembler* masm,
   __ Branch(&retry, eq, t0, Operand(zero_reg));
 
   // Special handling of out of memory exceptions.
-  Failure* out_of_memory = Failure::OutOfMemoryException();
-  __ Branch(USE_DELAY_SLOT,
-            throw_out_of_memory_exception,
-            eq,
-            v0,
-            Operand(reinterpret_cast<int32_t>(out_of_memory)));
-  // If we throw the OOM exception, the value of a3 doesn't matter.
-  // Any instruction can be in the delay slot that's not a jump.
+  JumpIfOOM(masm, v0, t0, throw_out_of_memory_exception);
 
   // Retrieve the pending exception and clear the variable.
   __ LoadRoot(a3, Heap::kTheHoleValueRootIndex);
@@ -4109,13 +4177,16 @@ void CEntryStub::Generate(MacroAssembler* masm) {
   Isolate* isolate = masm->isolate();
   ExternalReference external_caught(Isolate::kExternalCaughtExceptionAddress,
                                     isolate);
-  __ li(a0, Operand(false, RelocInfo::NONE));
+  __ li(a0, Operand(false, RelocInfo::NONE32));
   __ li(a2, Operand(external_caught));
   __ sw(a0, MemOperand(a2));
 
   // Set pending exception and v0 to out of memory exception.
-  Failure* out_of_memory = Failure::OutOfMemoryException();
+  Label already_have_failure;
+  JumpIfOOM(masm, v0, t0, &already_have_failure);
+  Failure* out_of_memory = Failure::OutOfMemoryException(0x1);
   __ li(v0, Operand(reinterpret_cast<int32_t>(out_of_memory)));
+  __ bind(&already_have_failure);
   __ li(a2, Operand(ExternalReference(Isolate::kPendingExceptionAddress,
                                       isolate)));
   __ sw(v0, MemOperand(a2));
@@ -4483,6 +4554,165 @@ void InstanceofStub::Generate(MacroAssembler* masm) {
     __ LoadRoot(v0, Heap::kFalseValueRootIndex);
     __ DropAndRet(HasArgsInRegisters() ? 0 : 2);
   }
+}
+
+
+void ArrayLengthStub::Generate(MacroAssembler* masm) {
+  Label miss;
+  Register receiver;
+  if (kind() == Code::KEYED_LOAD_IC) {
+    // ----------- S t a t e -------------
+    //  -- ra    : return address
+    //  -- a0    : key
+    //  -- a1    : receiver
+    // -----------------------------------
+    __ Branch(&miss, ne, a0,
+        Operand(masm->isolate()->factory()->length_symbol()));
+    receiver = a1;
+  } else {
+    ASSERT(kind() == Code::LOAD_IC);
+    // ----------- S t a t e -------------
+    //  -- a2    : name
+    //  -- ra    : return address
+    //  -- a0    : receiver
+    //  -- sp[0] : receiver
+    // -----------------------------------
+    receiver = a0;
+  }
+
+  StubCompiler::GenerateLoadArrayLength(masm, receiver, a3, &miss);
+  __ bind(&miss);
+  StubCompiler::GenerateLoadMiss(masm, kind());
+}
+
+
+void FunctionPrototypeStub::Generate(MacroAssembler* masm) {
+  Label miss;
+  Register receiver;
+  if (kind() == Code::KEYED_LOAD_IC) {
+    // ----------- S t a t e -------------
+    //  -- ra    : return address
+    //  -- a0    : key
+    //  -- a1    : receiver
+    // -----------------------------------
+    __ Branch(&miss, ne, a0,
+        Operand(masm->isolate()->factory()->prototype_symbol()));
+    receiver = a1;
+  } else {
+    ASSERT(kind() == Code::LOAD_IC);
+    // ----------- S t a t e -------------
+    //  -- a2    : name
+    //  -- ra    : return address
+    //  -- a0    : receiver
+    //  -- sp[0] : receiver
+    // -----------------------------------
+    receiver = a0;
+  }
+
+  StubCompiler::GenerateLoadFunctionPrototype(masm, receiver, a3, t0, &miss);
+  __ bind(&miss);
+  StubCompiler::GenerateLoadMiss(masm, kind());
+}
+
+
+void StringLengthStub::Generate(MacroAssembler* masm) {
+  Label miss;
+  Register receiver;
+  if (kind() == Code::KEYED_LOAD_IC) {
+    // ----------- S t a t e -------------
+    //  -- ra    : return address
+    //  -- a0    : key
+    //  -- a1    : receiver
+    // -----------------------------------
+    __ Branch(&miss, ne, a0,
+        Operand(masm->isolate()->factory()->length_symbol()));
+    receiver = a1;
+  } else {
+    ASSERT(kind() == Code::LOAD_IC);
+    // ----------- S t a t e -------------
+    //  -- a2    : name
+    //  -- ra    : return address
+    //  -- a0    : receiver
+    //  -- sp[0] : receiver
+    // -----------------------------------
+    receiver = a0;
+  }
+
+  StubCompiler::GenerateLoadStringLength(masm, receiver, a3, t0, &miss,
+                                         support_wrapper_);
+
+  __ bind(&miss);
+  StubCompiler::GenerateLoadMiss(masm, kind());
+}
+
+
+void StoreArrayLengthStub::Generate(MacroAssembler* masm) {
+  // This accepts as a receiver anything JSArray::SetElementsLength accepts
+  // (currently anything except for external arrays which means anything with
+  // elements of FixedArray type).  Value must be a number, but only smis are
+  // accepted as the most common case.
+  Label miss;
+
+  Register receiver;
+  Register value;
+  if (kind() == Code::KEYED_STORE_IC) {
+    // ----------- S t a t e -------------
+    //  -- ra    : return address
+    //  -- a0    : value
+    //  -- a1    : key
+    //  -- a2    : receiver
+    // -----------------------------------
+    __ Branch(&miss, ne, a1,
+        Operand(masm->isolate()->factory()->length_symbol()));
+    receiver = a2;
+    value = a0;
+  } else {
+    ASSERT(kind() == Code::STORE_IC);
+    // ----------- S t a t e -------------
+    //  -- ra    : return address
+    //  -- a0    : value
+    //  -- a1    : receiver
+    //  -- a2    : key
+    // -----------------------------------
+    receiver = a1;
+    value = a0;
+  }
+  Register scratch = a3;
+
+  // Check that the receiver isn't a smi.
+  __ JumpIfSmi(receiver, &miss);
+
+  // Check that the object is a JS array.
+  __ GetObjectType(receiver, scratch, scratch);
+  __ Branch(&miss, ne, scratch, Operand(JS_ARRAY_TYPE));
+
+  // Check that elements are FixedArray.
+  // We rely on StoreIC_ArrayLength below to deal with all types of
+  // fast elements (including COW).
+  __ lw(scratch, FieldMemOperand(receiver, JSArray::kElementsOffset));
+  __ GetObjectType(scratch, scratch, scratch);
+  __ Branch(&miss, ne, scratch, Operand(FIXED_ARRAY_TYPE));
+
+  // Check that the array has fast properties, otherwise the length
+  // property might have been redefined.
+  __ lw(scratch, FieldMemOperand(receiver, JSArray::kPropertiesOffset));
+  __ lw(scratch, FieldMemOperand(scratch, FixedArray::kMapOffset));
+  __ LoadRoot(at, Heap::kHashTableMapRootIndex);
+  __ Branch(&miss, eq, scratch, Operand(at));
+
+  // Check that value is a smi.
+  __ JumpIfNotSmi(value, &miss);
+
+  // Prepare tail call to StoreIC_ArrayLength.
+  __ Push(receiver, value);
+
+  ExternalReference ref =
+      ExternalReference(IC_Utility(IC::kStoreIC_ArrayLength), masm->isolate());
+  __ TailCallExternalReference(ref, 2, 1);
+
+  __ bind(&miss);
+
+  StubCompiler::GenerateStoreMiss(masm, kind());
 }
 
 
@@ -5538,8 +5768,8 @@ void CallFunctionStub::Generate(MacroAssembler* masm) {
   // Check for function proxy.
   __ Branch(&non_function, ne, a3, Operand(JS_FUNCTION_PROXY_TYPE));
   __ push(a1);  // Put proxy as additional argument.
-  __ li(a0, Operand(argc_ + 1, RelocInfo::NONE));
-  __ li(a2, Operand(0, RelocInfo::NONE));
+  __ li(a0, Operand(argc_ + 1, RelocInfo::NONE32));
+  __ li(a2, Operand(0, RelocInfo::NONE32));
   __ GetBuiltinEntry(a3, Builtins::CALL_FUNCTION_PROXY);
   __ SetCallKind(t1, CALL_AS_METHOD);
   {
@@ -5596,7 +5826,7 @@ void CallConstructStub::Generate(MacroAssembler* masm) {
   __ GetBuiltinEntry(a3, Builtins::CALL_NON_FUNCTION_AS_CONSTRUCTOR);
   __ bind(&do_call);
   // Set expected number of arguments to zero (not changing r0).
-  __ li(a2, Operand(0, RelocInfo::NONE));
+  __ li(a2, Operand(0, RelocInfo::NONE32));
   __ SetCallKind(t1, CALL_AS_METHOD);
   __ Jump(masm->isolate()->builtins()->ArgumentsAdaptorTrampoline(),
           RelocInfo::CODE_TARGET);
@@ -5713,11 +5943,11 @@ void StringCharFromCodeGenerator::GenerateFast(MacroAssembler* masm) {
 
   STATIC_ASSERT(kSmiTag == 0);
   STATIC_ASSERT(kSmiShiftSize == 0);
-  ASSERT(IsPowerOf2(String::kMaxAsciiCharCode + 1));
+  ASSERT(IsPowerOf2(String::kMaxOneByteCharCode + 1));
   __ And(t0,
          code_,
          Operand(kSmiTagMask |
-                 ((~String::kMaxAsciiCharCode) << kSmiTagSize)));
+                 ((~String::kMaxOneByteCharCode) << kSmiTagSize)));
   __ Branch(&slow_case_, ne, t0, Operand(zero_reg));
 
   __ LoadRoot(result_, Heap::kSingleCharacterStringCacheRootIndex);
@@ -5747,23 +5977,6 @@ void StringCharFromCodeGenerator::GenerateSlow(
   __ Branch(&exit_);
 
   __ Abort("Unexpected fallthrough from CharFromCode slow case");
-}
-
-
-// -------------------------------------------------------------------------
-// StringCharAtGenerator
-
-void StringCharAtGenerator::GenerateFast(MacroAssembler* masm) {
-  char_code_at_generator_.GenerateFast(masm);
-  char_from_code_generator_.GenerateFast(masm);
-}
-
-
-void StringCharAtGenerator::GenerateSlow(
-    MacroAssembler* masm,
-    const RuntimeCallHelper& call_helper) {
-  char_code_at_generator_.GenerateSlow(masm, call_helper);
-  char_from_code_generator_.GenerateSlow(masm, call_helper);
 }
 
 
@@ -6147,6 +6360,9 @@ void SubStringStub::Generate(MacroAssembler* masm) {
 
   __ Branch(&runtime, ne, t0, Operand(zero_reg));
 
+  Label single_char;
+  __ Branch(&single_char, eq, a2, Operand(1));
+
   // Short-cut for the case of trivial substring.
   Label return_v0;
   // v0: original string
@@ -6307,6 +6523,18 @@ void SubStringStub::Generate(MacroAssembler* masm) {
   // Just jump to runtime to create the sub string.
   __ bind(&runtime);
   __ TailCallRuntime(Runtime::kSubString, 3, 1);
+
+  __ bind(&single_char);
+  // v0: original string
+  // a1: instance type
+  // a2: length
+  // a3: from index (untagged)
+  __ SmiTag(a3, a3);
+  StringCharAtGenerator generator(
+      v0, a3, a2, v0, &runtime, &runtime, &runtime, STRING_INDEX_IS_NUMBER);
+  generator.GenerateFast(masm);
+  __ DropAndRet(3);
+  generator.SkipSlow(masm, &runtime);
 }
 
 
@@ -6628,6 +6856,11 @@ void StringAddStub::Generate(MacroAssembler* masm) {
   __ And(at, t0, Operand(kAsciiDataHintMask));
   __ and_(at, at, t1);
   __ Branch(&ascii_data, ne, at, Operand(zero_reg));
+  __ Xor(t0, t0, Operand(t1));
+  STATIC_ASSERT(kOneByteStringTag != 0 && kAsciiDataHintTag != 0);
+  __ And(t0, t0, Operand(kOneByteStringTag | kAsciiDataHintTag));
+  __ Branch(&ascii_data, eq, t0,
+      Operand(kOneByteStringTag | kAsciiDataHintTag));
 
   // Allocate a two byte cons string.
   __ AllocateTwoByteConsString(v0, t2, t0, t1, &call_runtime);
@@ -6882,7 +7115,7 @@ void ICCompareStub::GenerateHeapNumbers(MacroAssembler* masm) {
   __ bind(&generic_stub);
   ICCompareStub stub(op_, CompareIC::GENERIC, CompareIC::GENERIC,
                      CompareIC::GENERIC);
-  __ Jump(stub.GetCode(), RelocInfo::CODE_TARGET);
+  __ Jump(stub.GetCode(masm->isolate()), RelocInfo::CODE_TARGET);
 
   __ bind(&maybe_undefined1);
   if (Token::IsOrderedRelationalCompareOp(op_)) {
@@ -7133,10 +7366,9 @@ void DirectCEntryStub::GenerateCall(MacroAssembler* masm,
   // Push return address (accessible to GC through exit frame pc).
   // This spot for ra was reserved in EnterExitFrame.
   masm->sw(ra, MemOperand(sp, kCArgsSlotsSize));
-  masm->li(ra,
-           Operand(reinterpret_cast<intptr_t>(GetCode().location()),
-                   RelocInfo::CODE_TARGET),
-           CONSTANT_SIZE);
+  intptr_t loc =
+      reinterpret_cast<intptr_t>(GetCode(masm->isolate()).location());
+  masm->li(ra, Operand(loc, RelocInfo::CODE_TARGET), CONSTANT_SIZE);
   // Call the function.
   masm->Jump(t9);
   // Make sure the stored 'ra' points to this position.
@@ -7467,13 +7699,14 @@ bool StoreBufferOverflowStub::IsPregenerated() {
 }
 
 
-void StoreBufferOverflowStub::GenerateFixedRegStubsAheadOfTime() {
+void StoreBufferOverflowStub::GenerateFixedRegStubsAheadOfTime(
+    Isolate* isolate) {
   StoreBufferOverflowStub stub1(kDontSaveFPRegs);
-  stub1.GetCode()->set_is_pregenerated(true);
+  stub1.GetCode(isolate)->set_is_pregenerated(true);
 }
 
 
-void RecordWriteStub::GenerateFixedRegStubsAheadOfTime() {
+void RecordWriteStub::GenerateFixedRegStubsAheadOfTime(Isolate* isolate) {
   for (const AheadOfTimeWriteBarrierStubList* entry = kAheadOfTime;
        !entry->object.is(no_reg);
        entry++) {
@@ -7482,7 +7715,7 @@ void RecordWriteStub::GenerateFixedRegStubsAheadOfTime() {
                          entry->address,
                          entry->action,
                          kDontSaveFPRegs);
-    stub.GetCode()->set_is_pregenerated(true);
+    stub.GetCode(isolate)->set_is_pregenerated(true);
   }
 }
 
@@ -7752,6 +7985,21 @@ void StoreArrayLiteralElementStub::Generate(MacroAssembler* masm) {
                                  &slow_elements);
   __ Ret(USE_DELAY_SLOT);
   __ mov(v0, a0);
+}
+
+
+void StubFailureTrampolineStub::Generate(MacroAssembler* masm) {
+  ASSERT(!Serializer::enabled());
+  bool save_fp_regs = CpuFeatures::IsSupported(FPU);
+  CEntryStub ces(1, save_fp_regs ? kSaveFPRegs : kDontSaveFPRegs);
+  __ Call(ces.GetCode(masm->isolate()), RelocInfo::CODE_TARGET);
+  int parameter_count_offset =
+      StubFailureTrampolineFrame::kCallerStackParameterCountFrameOffset;
+  __ lw(a1, MemOperand(fp, parameter_count_offset));
+  masm->LeaveFrame(StackFrame::STUB_FAILURE_TRAMPOLINE);
+  __ sll(a1, a1, kPointerSizeLog2);
+  __ Addu(sp, sp, a1);
+  __ Ret();
 }
 
 

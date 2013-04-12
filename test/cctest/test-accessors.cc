@@ -225,7 +225,8 @@ THREADED_TEST(HandleScopePop) {
   LocalContext context;
   v8::Handle<v8::Object> inst = obj->NewInstance();
   context->Global()->Set(v8::String::New("obj"), inst);
-  int count_before = i::HandleScope::NumberOfHandles();
+  i::Isolate* isolate = i::Isolate::Current();
+  int count_before = i::HandleScope::NumberOfHandles(isolate);
   {
     v8::HandleScope scope;
     CompileRun(
@@ -234,7 +235,7 @@ THREADED_TEST(HandleScopePop) {
         "  obj.many;"
         "}");
   }
-  int count_after = i::HandleScope::NumberOfHandles();
+  int count_after = i::HandleScope::NumberOfHandles(isolate);
   CHECK_EQ(count_before, count_after);
 }
 
@@ -398,7 +399,7 @@ THREADED_TEST(Gc) {
 
 static v8::Handle<Value> StackCheck(Local<String> name,
                                     const AccessorInfo& info) {
-  i::StackFrameIterator iter;
+  i::StackFrameIterator iter(reinterpret_cast<i::Isolate*>(info.GetIsolate()));
   for (int i = 0; !iter.done(); i++) {
     i::StackFrame* frame = iter.frame();
     CHECK(i != 0 || (frame->type() == i::StackFrame::EXIT));

@@ -209,11 +209,7 @@ void Profiler::Engage() {
   if (engaged_) return;
   engaged_ = true;
 
-  // TODO(mnaganov): This is actually "Chromium" mode. Flags need to be revised.
-  // http://code.google.com/p/v8/issues/detail?id=487
-  if (!FLAG_prof_lazy) {
-    OS::LogSharedLibraryAddresses();
-  }
+  OS::LogSharedLibraryAddresses();
 
   // Start thread processing the profiler buffer.
   running_ = true;
@@ -384,7 +380,10 @@ class Logger::NameBuffer {
     if (str == NULL) return;
     if (str->HasOnlyAsciiChars()) {
       int utf8_length = Min(str->length(), kUtf8BufferSize - utf8_pos_);
-      String::WriteToFlat(str, utf8_buffer_ + utf8_pos_, 0, utf8_length);
+      String::WriteToFlat(str,
+                          reinterpret_cast<uint8_t*>(utf8_buffer_ + utf8_pos_),
+                          0,
+                          utf8_length);
       utf8_pos_ += utf8_length;
       return;
     }
@@ -393,7 +392,7 @@ class Logger::NameBuffer {
     int previous = unibrow::Utf16::kNoPreviousCharacter;
     for (int i = 0; i < uc16_length && utf8_pos_ < kUtf8BufferSize; ++i) {
       uc16 c = utf16_buffer[i];
-      if (c <= String::kMaxAsciiCharCodeU) {
+      if (c <= unibrow::Utf8::kMaxOneByteChar) {
         utf8_buffer_[utf8_pos_++] = static_cast<char>(c);
       } else {
         int char_length = unibrow::Utf8::Length(c, previous);
@@ -441,8 +440,9 @@ class Logger::NameBuffer {
 };
 
 
-Logger::Logger()
-  : ticker_(NULL),
+Logger::Logger(Isolate* isolate)
+  : isolate_(isolate),
+    ticker_(NULL),
     profiler_(NULL),
     log_events_(NULL),
     logging_nesting_(0),
@@ -469,12 +469,17 @@ Logger::~Logger() {
 
 
 void Logger::IssueCodeAddedEvent(Code* code,
+                                 Script* script,
                                  const char* name,
                                  size_t name_len) {
   JitCodeEvent event;
+  memset(&event, 0, sizeof(event));
   event.type = JitCodeEvent::CODE_ADDED;
   event.code_start = code->instruction_start();
   event.code_len = code->instruction_size();
+  Handle<Script> script_handle =
+      script != NULL ? Handle<Script>(script) : Handle<Script>();
+  event.script = v8::Handle<v8::Script>(ToApi<v8::Script>(script_handle));
   event.name.str = name;
   event.name.len = name_len;
 
@@ -513,6 +518,40 @@ void Logger::IssueCodeRemovedEvent(Address from) {
   code_event_handler_(&event);
 }
 
+void Logger::IssueAddCodeLinePosInfoEvent(
+    void* jit_handler_data,
+    int pc_offset,
+    int position,
+    JitCodeEvent::PositionType position_type) {
+  JitCodeEvent event;
+  memset(&event, 0, sizeof(event));
+  event.type = JitCodeEvent::CODE_ADD_LINE_POS_INFO;
+  event.user_data = jit_handler_data;
+  event.line_info.offset = pc_offset;
+  event.line_info.pos = position;
+  event.line_info.position_type = position_type;
+
+  code_event_handler_(&event);
+}
+
+void* Logger::IssueStartCodePosInfoEvent() {
+  JitCodeEvent event;
+  memset(&event, 0, sizeof(event));
+  event.type = JitCodeEvent::CODE_START_LINE_INFO_RECORDING;
+
+  code_event_handler_(&event);
+  return event.user_data;
+}
+
+void Logger::IssueEndCodePosInfoEvent(Code* code, void* jit_handler_data) {
+  JitCodeEvent event;
+  memset(&event, 0, sizeof(event));
+  event.type = JitCodeEvent::CODE_END_LINE_INFO_RECORDING;
+  event.code_start = code->instruction_start();
+  event.user_data = jit_handler_data;
+
+  code_event_handler_(&event);
+}
 
 #define DECLARE_EVENT(ignore1, name) name,
 static const char* const kLogEventsNames[Logger::NUMBER_OF_LOG_EVENTS] = {
@@ -630,46 +669,30 @@ void Logger::SharedLibraryEvent(const wchar_t* library_path,
 }
 
 
-void Logger::TimerEvent(const char* name, int64_t start, int64_t end) {
+void Logger::TimerEvent(StartEnd se, const char* name) {
   if (!log_->IsEnabled()) return;
   ASSERT(FLAG_log_internal_timer_events);
   LogMessageBuilder msg(this);
-  int since_epoch = static_cast<int>(start - epoch_);
-  int pause_time = static_cast<int>(end - start);
-  msg.Append("timer-event,\"%s\",%ld,%ld\n", name, since_epoch, pause_time);
+  int since_epoch = static_cast<int>(OS::Ticks() - epoch_);
+  const char* format = (se == START) ? "timer-event-start,\"%s\",%ld\n"
+                                     : "timer-event-end,\"%s\",%ld\n";
+  msg.Append(format, name, since_epoch);
   msg.WriteToLogFile();
 }
 
 
-void Logger::ExternalSwitch(StateTag old_tag, StateTag new_tag) {
-  if (old_tag != EXTERNAL && new_tag == EXTERNAL) {
-    enter_external_ = OS::Ticks();
-  }
-  if (old_tag == EXTERNAL && new_tag != EXTERNAL && enter_external_ != 0) {
-    TimerEvent("V8.External", enter_external_, OS::Ticks());
-    enter_external_ = 0;
-  }
-}
-
-
 void Logger::EnterExternal() {
-  LOGGER->enter_external_ = OS::Ticks();
+  LOG(ISOLATE, TimerEvent(START, TimerEventScope::v8_external));
 }
 
 
 void Logger::LeaveExternal() {
-  if (enter_external_ == 0) return;
-  Logger* logger = LOGGER;
-  logger->TimerEvent("V8.External", enter_external_, OS::Ticks());
-  logger->enter_external_ = 0;
+  LOG(ISOLATE, TimerEvent(END, TimerEventScope::v8_external));
 }
 
 
-int64_t Logger::enter_external_ = 0;
-
-
-void Logger::TimerEventScope::LogTimerEvent() {
-  LOG(isolate_, TimerEvent(name_, start_, OS::Ticks()));
+void Logger::TimerEventScope::LogTimerEvent(StartEnd se) {
+  LOG(isolate_, TimerEvent(se, name_));
 }
 
 
@@ -680,6 +703,7 @@ const char* Logger::TimerEventScope::v8_recompile_parallel =
 const char* Logger::TimerEventScope::v8_compile_full_code =
     "V8.CompileFullCode";
 const char* Logger::TimerEventScope::v8_execute = "V8.Execute";
+const char* Logger::TimerEventScope::v8_external = "V8.External";
 
 
 void Logger::LogRegExpSource(Handle<JSRegExp> regexp) {
@@ -734,9 +758,11 @@ void Logger::RegExpCompileEvent(Handle<JSRegExp> regexp, bool in_cache) {
 }
 
 
-void Logger::LogRuntime(Vector<const char> format, JSArray* args) {
+void Logger::LogRuntime(Isolate* isolate,
+                        Vector<const char> format,
+                        JSArray* args) {
   if (!log_->IsEnabled() || !FLAG_log_runtime) return;
-  HandleScope scope;
+  HandleScope scope(isolate);
   LogMessageBuilder msg(this);
   for (int i = 0; i < format.length(); i++) {
     char c = format[i];
@@ -897,7 +923,7 @@ void Logger::CodeCreateEvent(LogEventsAndTags tag,
     name_buffer_->AppendBytes(comment);
   }
   if (code_event_handler_ != NULL) {
-    IssueCodeAddedEvent(code, name_buffer_->get(), name_buffer_->size());
+    IssueCodeAddedEvent(code, NULL, name_buffer_->get(), name_buffer_->size());
   }
   if (!log_->IsEnabled()) return;
   if (FLAG_ll_prof) {
@@ -937,7 +963,7 @@ void Logger::CodeCreateEvent(LogEventsAndTags tag,
     name_buffer_->AppendString(name);
   }
   if (code_event_handler_ != NULL) {
-    IssueCodeAddedEvent(code, name_buffer_->get(), name_buffer_->size());
+    IssueCodeAddedEvent(code, NULL, name_buffer_->get(), name_buffer_->size());
   }
   if (!log_->IsEnabled()) return;
   if (FLAG_ll_prof) {
@@ -984,7 +1010,12 @@ void Logger::CodeCreateEvent(LogEventsAndTags tag,
     name_buffer_->AppendString(name);
   }
   if (code_event_handler_ != NULL) {
-    IssueCodeAddedEvent(code, name_buffer_->get(), name_buffer_->size());
+    Script* script =
+        shared->script()->IsScript() ? Script::cast(shared->script()) : NULL;
+    IssueCodeAddedEvent(code,
+                        script,
+                        name_buffer_->get(),
+                        name_buffer_->size());
   }
   if (!log_->IsEnabled()) return;
   if (FLAG_ll_prof) {
@@ -1034,7 +1065,12 @@ void Logger::CodeCreateEvent(LogEventsAndTags tag,
     name_buffer_->AppendInt(line);
   }
   if (code_event_handler_ != NULL) {
-    IssueCodeAddedEvent(code, name_buffer_->get(), name_buffer_->size());
+    Script* script =
+        shared->script()->IsScript() ? Script::cast(shared->script()) : NULL;
+    IssueCodeAddedEvent(code,
+                        script,
+                        name_buffer_->get(),
+                        name_buffer_->size());
   }
   if (!log_->IsEnabled()) return;
   if (FLAG_ll_prof) {
@@ -1075,7 +1111,7 @@ void Logger::CodeCreateEvent(LogEventsAndTags tag, Code* code, int args_count) {
     name_buffer_->AppendInt(args_count);
   }
   if (code_event_handler_ != NULL) {
-    IssueCodeAddedEvent(code, name_buffer_->get(), name_buffer_->size());
+    IssueCodeAddedEvent(code, NULL, name_buffer_->get(), name_buffer_->size());
   }
   if (!log_->IsEnabled()) return;
   if (FLAG_ll_prof) {
@@ -1113,7 +1149,7 @@ void Logger::RegExpCodeCreateEvent(Code* code, String* source) {
     name_buffer_->AppendString(source);
   }
   if (code_event_handler_ != NULL) {
-    IssueCodeAddedEvent(code, name_buffer_->get(), name_buffer_->size());
+    IssueCodeAddedEvent(code, NULL, name_buffer_->get(), name_buffer_->size());
   }
   if (!log_->IsEnabled()) return;
   if (FLAG_ll_prof) {
@@ -1157,6 +1193,40 @@ void Logger::CodeDeleteEvent(Address from) {
   DeleteEventInternal(CODE_DELETE_EVENT, from);
 }
 
+void Logger::CodeLinePosInfoAddPositionEvent(void* jit_handler_data,
+                                     int pc_offset,
+                                     int position) {
+  if (code_event_handler_ != NULL) {
+    IssueAddCodeLinePosInfoEvent(jit_handler_data,
+                                 pc_offset,
+                                 position,
+                                 JitCodeEvent::POSITION);
+  }
+}
+
+void Logger::CodeLinePosInfoAddStatementPositionEvent(void* jit_handler_data,
+                                                      int pc_offset,
+                                                      int position) {
+  if (code_event_handler_ != NULL) {
+    IssueAddCodeLinePosInfoEvent(jit_handler_data,
+                                 pc_offset,
+                                 position,
+                                 JitCodeEvent::STATEMENT_POSITION);
+  }
+}
+
+void Logger::CodeStartLinePosInfoRecordEvent(PositionsRecorder* pos_recorder) {
+  if (code_event_handler_ != NULL) {
+      pos_recorder->AttachJITHandlerData(IssueStartCodePosInfoEvent());
+  }
+}
+
+void Logger::CodeEndLinePosInfoRecordEvent(Code* code,
+                                           void* jit_handler_data) {
+  if (code_event_handler_ != NULL) {
+    IssueEndCodePosInfoEvent(code, jit_handler_data);
+  }
+}
 
 void Logger::SnapshotPositionEvent(Address addr, int pos) {
   if (!log_->IsEnabled()) return;
@@ -1233,7 +1303,7 @@ void Logger::SuspectReadEvent(String* name, Object* obj) {
   LogMessageBuilder msg(this);
   String* class_name = obj->IsJSObject()
                        ? JSObject::cast(obj)->class_name()
-                       : HEAP->empty_string();
+                       : isolate_->heap()->empty_string();
   msg.Append("suspect-read,");
   msg.Append(class_name);
   msg.Append(',');
@@ -1410,9 +1480,10 @@ class EnumerateOptimizedFunctionsVisitor: public OptimizedFunctionVisitor {
 };
 
 
-static int EnumerateCompiledFunctions(Handle<SharedFunctionInfo>* sfis,
+static int EnumerateCompiledFunctions(Heap* heap,
+                                      Handle<SharedFunctionInfo>* sfis,
                                       Handle<Code>* code_objects) {
-  HeapIterator iterator;
+  HeapIterator iterator(heap);
   AssertNoAllocation no_alloc;
   int compiled_funcs_count = 0;
 
@@ -1578,9 +1649,10 @@ void Logger::LowLevelLogWriteBytes(const char* bytes, int size) {
 
 
 void Logger::LogCodeObjects() {
-  HEAP->CollectAllGarbage(Heap::kMakeHeapIterableMask,
+  Heap* heap = isolate_->heap();
+  heap->CollectAllGarbage(Heap::kMakeHeapIterableMask,
                           "Logger::LogCodeObjects");
-  HeapIterator iterator;
+  HeapIterator iterator(heap);
   AssertNoAllocation no_alloc;
   for (HeapObject* obj = iterator.next(); obj != NULL; obj = iterator.next()) {
     if (obj->IsCode()) LogCodeObject(obj);
@@ -1634,13 +1706,14 @@ void Logger::LogExistingFunction(Handle<SharedFunctionInfo> shared,
 
 
 void Logger::LogCompiledFunctions() {
-  HEAP->CollectAllGarbage(Heap::kMakeHeapIterableMask,
+  Heap* heap = isolate_->heap();
+  heap->CollectAllGarbage(Heap::kMakeHeapIterableMask,
                           "Logger::LogCompiledFunctions");
-  HandleScope scope;
-  const int compiled_funcs_count = EnumerateCompiledFunctions(NULL, NULL);
+  HandleScope scope(isolate_);
+  const int compiled_funcs_count = EnumerateCompiledFunctions(heap, NULL, NULL);
   ScopedVector< Handle<SharedFunctionInfo> > sfis(compiled_funcs_count);
   ScopedVector< Handle<Code> > code_objects(compiled_funcs_count);
-  EnumerateCompiledFunctions(sfis.start(), code_objects.start());
+  EnumerateCompiledFunctions(heap, sfis.start(), code_objects.start());
 
   // During iteration, there can be heap allocation due to
   // GetScriptLineNumber call.
@@ -1654,13 +1727,14 @@ void Logger::LogCompiledFunctions() {
 
 
 void Logger::LogAccessorCallbacks() {
-  HEAP->CollectAllGarbage(Heap::kMakeHeapIterableMask,
+  Heap* heap = isolate_->heap();
+  heap->CollectAllGarbage(Heap::kMakeHeapIterableMask,
                           "Logger::LogAccessorCallbacks");
-  HeapIterator iterator;
+  HeapIterator iterator(heap);
   AssertNoAllocation no_alloc;
   for (HeapObject* obj = iterator.next(); obj != NULL; obj = iterator.next()) {
-    if (!obj->IsAccessorInfo()) continue;
-    AccessorInfo* ai = AccessorInfo::cast(obj);
+    if (!obj->IsExecutableAccessorInfo()) continue;
+    ExecutableAccessorInfo* ai = ExecutableAccessorInfo::cast(obj);
     if (!ai->name()->IsString()) continue;
     String* name = String::cast(ai->name());
     Address getter_entry = v8::ToCData<Address>(ai->getter());
@@ -1734,7 +1808,7 @@ void Logger::SetCodeEventHandler(uint32_t options,
   code_event_handler_ = event_handler;
 
   if (code_event_handler_ != NULL && (options & kJitCodeEventEnumExisting)) {
-    HandleScope scope;
+    HandleScope scope(Isolate::Current());
     LogCodeObjects();
     LogCompiledFunctions();
   }

@@ -98,15 +98,14 @@ Handle<Code> PlatformCodeStub::GenerateCode() {
 
   // Copy the generated code into a heap object.
   Code::Flags flags = Code::ComputeFlags(
-      static_cast<Code::Kind>(GetCodeKind()), GetICState());
+      static_cast<Code::Kind>(GetCodeKind()), GetICState(), GetExtraICState());
   Handle<Code> new_object = factory->NewCode(
       desc, flags, masm.CodeObject(), NeedsImmovableCode());
   return new_object;
 }
 
 
-Handle<Code> CodeStub::GetCode() {
-  Isolate* isolate = Isolate::Current();
+Handle<Code> CodeStub::GetCode(Isolate* isolate) {
   Factory* factory = isolate->factory();
   Heap* heap = isolate->heap();
   Code* code;
@@ -194,8 +193,8 @@ void BinaryOpStub::Generate(MacroAssembler* masm) {
     case BinaryOpIC::INT32:
       GenerateInt32Stub(masm);
       break;
-    case BinaryOpIC::HEAP_NUMBER:
-      GenerateHeapNumberStub(masm);
+    case BinaryOpIC::NUMBER:
+      GenerateNumberStub(masm);
       break;
     case BinaryOpIC::ODDBALL:
       GenerateOddballStub(masm);
@@ -308,12 +307,10 @@ bool ICCompareStub::FindCodeInSpecialCache(Code** code_out, Isolate* isolate) {
       static_cast<Code::Kind>(GetCodeKind()),
       UNINITIALIZED);
   ASSERT(op_ == Token::EQ || op_ == Token::EQ_STRICT);
-  Handle<Object> probe(
-      known_map_->FindInCodeCache(
-        strict() ?
-            *factory->strict_compare_ic_symbol() :
-            *factory->compare_ic_symbol(),
-        flags));
+  String* symbol = strict() ?
+      *factory->strict_compare_ic_symbol() :
+      *factory->compare_ic_symbol();
+  Handle<Object> probe(known_map_->FindInCodeCache(symbol, flags), isolate);
   if (probe->IsCode()) {
     *code_out = Code::cast(*probe);
 #ifdef DEBUG
@@ -367,8 +364,8 @@ void ICCompareStub::Generate(MacroAssembler* masm) {
     case CompareIC::SMI:
       GenerateSmis(masm);
       break;
-    case CompareIC::HEAP_NUMBER:
-      GenerateHeapNumbers(masm);
+    case CompareIC::NUMBER:
+      GenerateNumbers(masm);
       break;
     case CompareIC::STRING:
       GenerateStrings(masm);
@@ -379,7 +376,7 @@ void ICCompareStub::Generate(MacroAssembler* masm) {
     case CompareIC::OBJECT:
       GenerateObjects(masm);
       break;
-    case CompareIC::KNOWN_OBJECTS:
+    case CompareIC::KNOWN_OBJECT:
       ASSERT(*known_map_ != NULL);
       GenerateKnownObjects(masm);
       break;
@@ -570,15 +567,16 @@ bool ToBooleanStub::Types::CanBeUndetectable() const {
 
 void ElementsTransitionAndStoreStub::Generate(MacroAssembler* masm) {
   Label fail;
+  AllocationSiteMode mode = AllocationSiteInfo::GetMode(from_, to_);
   ASSERT(!IsFastHoleyElementsKind(from_) || IsFastHoleyElementsKind(to_));
   if (!FLAG_trace_elements_transitions) {
     if (IsFastSmiOrObjectElementsKind(to_)) {
       if (IsFastSmiOrObjectElementsKind(from_)) {
         ElementsTransitionGenerator::
-            GenerateMapChangeElementsTransition(masm);
+            GenerateMapChangeElementsTransition(masm, mode, &fail);
       } else if (IsFastDoubleElementsKind(from_)) {
         ASSERT(!IsFastSmiElementsKind(to_));
-        ElementsTransitionGenerator::GenerateDoubleToObject(masm, &fail);
+        ElementsTransitionGenerator::GenerateDoubleToObject(masm, mode, &fail);
       } else {
         UNREACHABLE();
       }
@@ -588,20 +586,28 @@ void ElementsTransitionAndStoreStub::Generate(MacroAssembler* masm) {
                                                        grow_mode_);
     } else if (IsFastSmiElementsKind(from_) &&
                IsFastDoubleElementsKind(to_)) {
-      ElementsTransitionGenerator::GenerateSmiToDouble(masm, &fail);
+      ElementsTransitionGenerator::GenerateSmiToDouble(masm, mode, &fail);
       KeyedStoreStubCompiler::GenerateStoreFastDoubleElement(masm,
                                                              is_jsarray_,
                                                              grow_mode_);
     } else if (IsFastDoubleElementsKind(from_)) {
       ASSERT(to_ == FAST_HOLEY_DOUBLE_ELEMENTS);
       ElementsTransitionGenerator::
-          GenerateMapChangeElementsTransition(masm);
+          GenerateMapChangeElementsTransition(masm, mode, &fail);
     } else {
       UNREACHABLE();
     }
   }
   masm->bind(&fail);
   KeyedStoreIC::GenerateRuntimeSetProperty(masm, strict_mode_);
+}
+
+
+void StubFailureTrampolineStub::GenerateAheadOfTime(Isolate* isolate) {
+  int i = 0;
+  for (; i <= StubFailureTrampolineStub::kMaxExtraExpressionStackCount; ++i) {
+    StubFailureTrampolineStub(i).GetCode(isolate);
+  }
 }
 
 

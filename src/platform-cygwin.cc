@@ -177,6 +177,11 @@ void OS::Sleep(int milliseconds) {
 }
 
 
+int OS::NumberOfCores() {
+  return sysconf(_SC_NPROCESSORS_ONLN);
+}
+
+
 void OS::Abort() {
   // Redirect to std abort to signal abnormal program termination.
   abort();
@@ -768,6 +773,23 @@ void Sampler::Stop() {
   ASSERT(IsActive());
   SamplerThread::RemoveActiveSampler(this);
   SetActive(false);
+}
+
+
+bool Sampler::CanSampleOnProfilerEventsProcessorThread() {
+  return false;
+}
+
+
+void Sampler::DoSample() {
+}
+
+
+void Sampler::StartProfiling() {
+}
+
+
+void Sampler::StopProfiling() {
 }
 
 

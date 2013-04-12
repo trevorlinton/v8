@@ -142,6 +142,11 @@ bool Object::IsExternal() {
 }
 
 
+bool Object::IsAccessorInfo() {
+  return IsExecutableAccessorInfo() || IsDeclaredAccessorInfo();
+}
+
+
 bool Object::IsInstanceOf(FunctionTemplateInfo* expected) {
   // There is a constraint on the object; check.
   if (!this->IsJSObject()) return false;
@@ -341,7 +346,17 @@ bool String::IsTwoByteRepresentationUnderneath() {
 
 bool String::HasOnlyAsciiChars() {
   uint32_t type = map()->instance_type();
+#ifndef ENABLE_LATIN_1
+  return (type & kStringEncodingMask) == kOneByteStringTag ||
+         (type & kAsciiDataHintMask) == kAsciiDataHintTag;
+#else
   return (type & kAsciiDataHintMask) == kAsciiDataHintTag;
+#endif
+}
+
+
+bool String::IsOneByteConvertible() {
+  return HasOnlyAsciiChars() || IsOneByteRepresentation();
 }
 
 
@@ -570,6 +585,14 @@ bool Object::IsDeoptimizationOutputData() {
   // a deoptimization data array.  Since this is used for asserts we can check
   // that the length is plausible though.
   if (FixedArray::cast(this)->length() % 2 != 0) return false;
+  return true;
+}
+
+
+bool Object::IsDependentCode() {
+  if (!IsFixedArray()) return false;
+  // There's actually no way to see the difference between a fixed array and
+  // a dependent codes array.
   return true;
 }
 
@@ -1038,8 +1061,8 @@ Failure* Failure::Exception() {
 }
 
 
-Failure* Failure::OutOfMemoryException() {
-  return Construct(OUT_OF_MEMORY_EXCEPTION);
+Failure* Failure::OutOfMemoryException(intptr_t value) {
+  return Construct(OUT_OF_MEMORY_EXCEPTION, value);
 }
 
 
@@ -1734,7 +1757,7 @@ bool Object::IsStringObjectWithCharacterAt(uint32_t index) {
   if (!js_value->value()->IsString()) return false;
 
   String* str = String::cast(js_value->value());
-  if (index >= (uint32_t)str->length()) return false;
+  if (index >= static_cast<uint32_t>(str->length())) return false;
 
   return true;
 }
@@ -2124,6 +2147,16 @@ Object** DescriptorArray::GetKeySlot(int descriptor_number) {
 }
 
 
+Object** DescriptorArray::GetDescriptorStartSlot(int descriptor_number) {
+  return GetKeySlot(descriptor_number);
+}
+
+
+Object** DescriptorArray::GetDescriptorEndSlot(int descriptor_number) {
+  return GetValueSlot(descriptor_number - 1) + 1;
+}
+
+
 String* DescriptorArray::GetKey(int descriptor_number) {
   ASSERT(descriptor_number < number_of_descriptors());
   return String::cast(get(ToKeyIndex(descriptor_number)));
@@ -2364,6 +2397,7 @@ CAST_ACCESSOR(FixedDoubleArray)
 CAST_ACCESSOR(DescriptorArray)
 CAST_ACCESSOR(DeoptimizationInputData)
 CAST_ACCESSOR(DeoptimizationOutputData)
+CAST_ACCESSOR(DependentCode)
 CAST_ACCESSOR(TypeFeedbackCells)
 CAST_ACCESSOR(SymbolTable)
 CAST_ACCESSOR(JSFunctionResultCache)
@@ -2418,6 +2452,7 @@ CAST_ACCESSOR(ExternalFloatArray)
 CAST_ACCESSOR(ExternalDoubleArray)
 CAST_ACCESSOR(ExternalPixelArray)
 CAST_ACCESSOR(Struct)
+CAST_ACCESSOR(AccessorInfo)
 
 
 #define MAKE_STRUCT_CAST(NAME, Name, name) CAST_ACCESSOR(Name)
@@ -2546,31 +2581,26 @@ void String::Visit(
     switch (type & (kStringRepresentationMask | kStringEncodingMask)) {
       case kSeqStringTag | kOneByteStringTag:
         visitor.VisitOneByteString(
-            reinterpret_cast<const uint8_t*>(
-                SeqOneByteString::cast(string)->GetChars()) + slice_offset,
-                length - offset);
+            SeqOneByteString::cast(string)->GetChars() + slice_offset,
+            length - offset);
         return;
 
       case kSeqStringTag | kTwoByteStringTag:
         visitor.VisitTwoByteString(
-            reinterpret_cast<const uint16_t*>(
-                SeqTwoByteString::cast(string)->GetChars()) + slice_offset,
-                length - offset);
+            SeqTwoByteString::cast(string)->GetChars() + slice_offset,
+            length - offset);
         return;
 
       case kExternalStringTag | kOneByteStringTag:
         visitor.VisitOneByteString(
-            reinterpret_cast<const uint8_t*>(
-                ExternalAsciiString::cast(string)->GetChars()) + slice_offset,
-                length - offset);
+            ExternalAsciiString::cast(string)->GetChars() + slice_offset,
+            length - offset);
         return;
 
       case kExternalStringTag | kTwoByteStringTag:
         visitor.VisitTwoByteString(
-            reinterpret_cast<const uint16_t*>(
-                ExternalTwoByteString::cast(string)->GetChars())
-                    + slice_offset,
-                length - offset);
+            ExternalTwoByteString::cast(string)->GetChars() + slice_offset,
+            length - offset);
         return;
 
       case kSlicedStringTag | kOneByteStringTag:
@@ -2605,7 +2635,7 @@ uint16_t SeqOneByteString::SeqOneByteStringGet(int index) {
 
 
 void SeqOneByteString::SeqOneByteStringSet(int index, uint16_t value) {
-  ASSERT(index >= 0 && index < length() && value <= kMaxAsciiCharCode);
+  ASSERT(index >= 0 && index < length() && value <= kMaxOneByteCharCode);
   WRITE_BYTE_FIELD(this, kHeaderSize + index * kCharSize,
                    static_cast<byte>(value));
 }
@@ -2616,8 +2646,8 @@ Address SeqOneByteString::GetCharsAddress() {
 }
 
 
-char* SeqOneByteString::GetChars() {
-  return reinterpret_cast<char*>(GetCharsAddress());
+uint8_t* SeqOneByteString::GetChars() {
+  return reinterpret_cast<uint8_t*>(GetCharsAddress());
 }
 
 
@@ -2727,8 +2757,8 @@ void ExternalAsciiString::set_resource(
 }
 
 
-const char* ExternalAsciiString::GetChars() {
-  return resource()->data();
+const uint8_t* ExternalAsciiString::GetChars() {
+  return reinterpret_cast<const uint8_t*>(resource()->data());
 }
 
 
@@ -3373,6 +3403,11 @@ Code::Flags Code::flags() {
 }
 
 
+inline bool Map::CanTrackAllocationSite() {
+  return instance_type() == JS_ARRAY_TYPE;
+}
+
+
 void Map::set_owns_descriptors(bool is_shared) {
   set_bit_field3(OwnsDescriptors::update(bit_field3(), is_shared));
 }
@@ -3393,6 +3428,71 @@ void Map::set_is_observed(bool is_observed) {
 
 bool Map::is_observed() {
   return IsObserved::decode(bit_field3());
+}
+
+
+void Map::NotifyLeafMapLayoutChange() {
+  dependent_code()->DeoptimizeDependentCodeGroup(
+      DependentCode::kPrototypeCheckGroup);
+}
+
+
+bool Map::CanOmitPrototypeChecks() {
+  return !HasTransitionArray() && !is_dictionary_map() &&
+         FLAG_omit_prototype_checks_for_leaf_maps;
+}
+
+
+void Map::AddDependentCode(DependentCode::DependencyGroup group,
+                           Handle<Code> code) {
+  Handle<DependentCode> codes =
+      DependentCode::Insert(Handle<DependentCode>(dependent_code()),
+                             group, code);
+  if (*codes != dependent_code()) {
+    set_dependent_code(*codes);
+  }
+}
+
+
+int DependentCode::number_of_entries(DependencyGroup group) {
+  if (length() == 0) return 0;
+  return Smi::cast(get(group))->value();
+}
+
+
+void DependentCode::set_number_of_entries(DependencyGroup group, int value) {
+  set(group, Smi::FromInt(value));
+}
+
+
+Code* DependentCode::code_at(int i) {
+  return Code::cast(get(kCodesStartIndex + i));
+}
+
+
+void DependentCode::set_code_at(int i, Code* value) {
+  set(kCodesStartIndex + i, value);
+}
+
+
+Object** DependentCode::code_slot_at(int i) {
+  return HeapObject::RawField(
+      this, FixedArray::OffsetOfElementAt(kCodesStartIndex + i));
+}
+
+
+void DependentCode::clear_code_at(int i) {
+  set_undefined(kCodesStartIndex + i);
+}
+
+
+void DependentCode::ExtendGroup(DependencyGroup group) {
+  GroupStartIndexes starts(this);
+  for (int g = kGroupCount - 1; g > group; g--) {
+    if (starts.at(g) < starts.at(g + 1)) {
+      set_code_at(starts.at(g + 1), code_at(starts.at(g)));
+    }
+  }
 }
 
 
@@ -3418,14 +3518,13 @@ InlineCacheState Code::ic_state() {
   // a call to code object has been replaced with a debug break call.
   ASSERT(is_inline_cache_stub() ||
          result == UNINITIALIZED ||
-         result == DEBUG_BREAK ||
-         result == DEBUG_PREPARE_STEP_IN);
+         result == DEBUG_STUB);
   return result;
 }
 
 
 Code::ExtraICState Code::extra_ic_state() {
-  ASSERT(is_inline_cache_stub());
+  ASSERT(is_inline_cache_stub() || ic_state() == DEBUG_STUB);
   return ExtractExtraICStateFromFlags(flags());
 }
 
@@ -3447,6 +3546,8 @@ int Code::major_key() {
          kind() == UNARY_OP_IC ||
          kind() == BINARY_OP_IC ||
          kind() == COMPARE_IC ||
+         kind() == LOAD_IC ||
+         kind() == KEYED_LOAD_IC ||
          kind() == TO_BOOLEAN_IC);
   return StubMajorKeyField::decode(
       READ_UINT32_FIELD(this, kKindSpecificFlags2Offset));
@@ -3459,6 +3560,10 @@ void Code::set_major_key(int major) {
          kind() == UNARY_OP_IC ||
          kind() == BINARY_OP_IC ||
          kind() == COMPARE_IC ||
+         kind() == LOAD_IC ||
+         kind() == KEYED_LOAD_IC ||
+         kind() == STORE_IC ||
+         kind() == KEYED_STORE_IC ||
          kind() == TO_BOOLEAN_IC);
   ASSERT(0 <= major && major < 256);
   int previous = READ_UINT32_FIELD(this, kKindSpecificFlags2Offset);
@@ -3670,9 +3775,29 @@ void Code::set_has_function_cache(bool flag) {
 }
 
 
+bool Code::marked_for_deoptimization() {
+  ASSERT(kind() == OPTIMIZED_FUNCTION);
+  return MarkedForDeoptimizationField::decode(
+      READ_UINT32_FIELD(this, kKindSpecificFlags1Offset));
+}
+
+
+void Code::set_marked_for_deoptimization(bool flag) {
+  ASSERT(kind() == OPTIMIZED_FUNCTION);
+  int previous = READ_UINT32_FIELD(this, kKindSpecificFlags1Offset);
+  int updated = MarkedForDeoptimizationField::update(previous, flag);
+  WRITE_UINT32_FIELD(this, kKindSpecificFlags1Offset, updated);
+}
+
+
 bool Code::is_inline_cache_stub() {
   Kind kind = this->kind();
   return kind >= FIRST_IC_KIND && kind <= LAST_IC_KIND;
+}
+
+
+bool Code::is_debug_break() {
+  return ic_state() == DEBUG_STUB && extra_ic_state() == DEBUG_BREAK;
 }
 
 
@@ -3700,10 +3825,10 @@ Code::Flags Code::ComputeFlags(Kind kind,
 
 
 Code::Flags Code::ComputeMonomorphicFlags(Kind kind,
-                                          StubType type,
                                           ExtraICState extra_ic_state,
-                                          InlineCacheHolderFlag holder,
-                                          int argc) {
+                                          StubType type,
+                                          int argc,
+                                          InlineCacheHolderFlag holder) {
   return ComputeFlags(kind, MONOMORPHIC, extra_ic_state, type, argc, holder);
 }
 
@@ -3993,6 +4118,7 @@ HeapObject* Map::UncheckedPrototypeTransitions() {
 
 
 ACCESSORS(Map, code_cache, Object, kCodeCacheOffset)
+ACCESSORS(Map, dependent_code, DependentCode, kDependentCodeOffset)
 ACCESSORS(Map, constructor, Object, kConstructorOffset)
 
 ACCESSORS(JSFunction, shared, SharedFunctionInfo, kSharedFunctionInfoOffset)
@@ -4006,13 +4132,19 @@ ACCESSORS(GlobalObject, global_receiver, JSObject, kGlobalReceiverOffset)
 
 ACCESSORS(JSGlobalProxy, native_context, Object, kNativeContextOffset)
 
-ACCESSORS(AccessorInfo, getter, Object, kGetterOffset)
-ACCESSORS(AccessorInfo, setter, Object, kSetterOffset)
-ACCESSORS(AccessorInfo, data, Object, kDataOffset)
 ACCESSORS(AccessorInfo, name, Object, kNameOffset)
 ACCESSORS_TO_SMI(AccessorInfo, flag, kFlagOffset)
 ACCESSORS(AccessorInfo, expected_receiver_type, Object,
           kExpectedReceiverTypeOffset)
+
+ACCESSORS(DeclaredAccessorDescriptor, internal_field, Smi, kInternalFieldOffset)
+
+ACCESSORS(DeclaredAccessorInfo, descriptor, DeclaredAccessorDescriptor,
+          kDescriptorOffset)
+
+ACCESSORS(ExecutableAccessorInfo, getter, Object, kGetterOffset)
+ACCESSORS(ExecutableAccessorInfo, setter, Object, kSetterOffset)
+ACCESSORS(ExecutableAccessorInfo, data, Object, kDataOffset)
 
 ACCESSORS(AccessorPair, getter, Object, kGetterOffset)
 ACCESSORS(AccessorPair, setter, Object, kSetterOffset)
@@ -4063,6 +4195,8 @@ ACCESSORS(SignatureInfo, receiver, Object, kReceiverOffset)
 ACCESSORS(SignatureInfo, args, Object, kArgsOffset)
 
 ACCESSORS(TypeSwitchInfo, types, Object, kTypesOffset)
+
+ACCESSORS(AllocationSiteInfo, payload, Object, kPayloadOffset)
 
 ACCESSORS(Script, source, Object, kSourceOffset)
 ACCESSORS(Script, name, Object, kNameOffset)
@@ -4372,6 +4506,19 @@ Code* SharedFunctionInfo::unchecked_code() {
 void SharedFunctionInfo::set_code(Code* value, WriteBarrierMode mode) {
   WRITE_FIELD(this, kCodeOffset, value);
   CONDITIONAL_WRITE_BARRIER(value->GetHeap(), this, kCodeOffset, value, mode);
+}
+
+
+void SharedFunctionInfo::ReplaceCode(Code* value) {
+  // If the GC metadata field is already used then the function was
+  // enqueued as a code flushing candidate and we remove it now.
+  if (code()->gc_metadata() != NULL) {
+    CodeFlusher* flusher = GetHeap()->mark_compact_collector()->code_flusher();
+    flusher->EvictCandidate(this);
+  }
+
+  ASSERT(code()->gc_metadata() == NULL && value->gc_metadata() == NULL);
+  set_code(value);
 }
 
 
@@ -4819,14 +4966,19 @@ void Code::set_type_feedback_info(Object* value, WriteBarrierMode mode) {
 
 
 int Code::stub_info() {
-  ASSERT(kind() == COMPARE_IC || kind() == BINARY_OP_IC);
+  ASSERT(kind() == COMPARE_IC || kind() == BINARY_OP_IC || kind() == LOAD_IC);
   Object* value = READ_FIELD(this, kTypeFeedbackInfoOffset);
   return Smi::cast(value)->value();
 }
 
 
 void Code::set_stub_info(int value) {
-  ASSERT(kind() == COMPARE_IC || kind() == BINARY_OP_IC);
+  ASSERT(kind() == COMPARE_IC ||
+         kind() == BINARY_OP_IC ||
+         kind() == LOAD_IC ||
+         kind() == KEYED_LOAD_IC ||
+         kind() == STORE_IC ||
+         kind() == KEYED_STORE_IC);
   WRITE_FIELD(this, kTypeFeedbackInfoOffset, Smi::FromInt(value));
 }
 
@@ -4971,13 +5123,6 @@ void JSRegExp::SetDataAtUnchecked(int index, Object* value, Heap* heap) {
     // We only do this during GC, so we don't need to notify the write barrier.
     fa->set_unchecked(heap, index, value, SKIP_WRITE_BARRIER);
   }
-}
-
-
-void JSRegExp::ResetLastIndex() {
-  InObjectPropertyAtPut(JSRegExp::kLastIndexFieldIndex,
-                        Smi::FromInt(0),
-                        SKIP_WRITE_BARRIER);  // It's a Smi.
 }
 
 

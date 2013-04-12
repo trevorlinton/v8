@@ -308,7 +308,7 @@ class MacroAssembler: public Assembler {
 
   // Push a handle.
   void Push(Handle<Object> handle);
-  void Push(Smi* smi) { Push(Handle<Smi>(smi)); }
+  void Push(Smi* smi) { Push(Handle<Smi>(smi, isolate())); }
 
   // Push two registers.  Pushes leftmost register first (to highest address).
   void Push(Register src1, Register src2, Condition cond = al) {
@@ -460,11 +460,6 @@ class MacroAssembler: public Assembler {
             const MemOperand& dst,
             Condition cond = al);
 
-  // Clear specified FPSCR bits.
-  void ClearFPSCRBits(const uint32_t bits_to_clear,
-                      const Register scratch,
-                      const Condition cond = al);
-
   // Compare double values and move the result to the normal condition flags.
   void VFPCompareAndSetFlags(const DwVfpRegister src1,
                              const DwVfpRegister src2,
@@ -485,8 +480,7 @@ class MacroAssembler: public Assembler {
 
   void Vmov(const DwVfpRegister dst,
             const double imm,
-            const Register scratch = no_reg,
-            const Condition cond = al);
+            const Register scratch = no_reg);
 
   // Enter exit frame.
   // stack_space - extra stack space, used for alignment before call to C.
@@ -997,6 +991,11 @@ class MacroAssembler: public Assembler {
                          Register source,
                          Register scratch);
 
+  // Check whether d16-d31 are available on the CPU. The result is given by the
+  // Z condition flag: Z==0 if d16-d31 available, Z==1 otherwise.
+  void CheckFor32DRegs(Register scratch);
+
+
   // ---------------------------------------------------------------------------
   // Runtime calls
 
@@ -1309,6 +1308,15 @@ class MacroAssembler: public Assembler {
   // in r0.  Assumes that any other register can be used as a scratch.
   void CheckEnumCache(Register null_value, Label* call_runtime);
 
+  // AllocationSiteInfo support. Arrays may have an associated
+  // AllocationSiteInfo object that can be checked for in order to pretransition
+  // to another type.
+  // On entry, receiver_reg should point to the array object.
+  // scratch_reg gets clobbered.
+  // If allocation info is present, condition flags are set to eq
+  void TestJSArrayForAllocationSiteInfo(Register receiver_reg,
+                                        Register scratch_reg);
+
  private:
   void CallCFunctionHelper(Register function,
                            int num_reg_arguments,
@@ -1392,7 +1400,6 @@ class CodePatcher {
 
  private:
   byte* address_;  // The address of the code being patched.
-  int instructions_;  // Number of instructions of the expected patch size.
   int size_;  // Number of bytes of the expected patch size.
   MacroAssembler masm_;  // Macro assembler used to generate the code.
 };

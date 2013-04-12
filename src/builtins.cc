@@ -150,7 +150,7 @@ static inline bool CalledAsConstructor(Isolate* isolate) {
   // Calculate the result using a full stack frame iterator and check
   // that the state of the stack is as we assume it to be in the
   // code below.
-  StackFrameIterator it;
+  StackFrameIterator it(isolate);
   ASSERT(it.frame()->is_exit());
   it.Advance();
   StackFrame* frame = it.frame();
@@ -334,26 +334,6 @@ static void MoveDoubleElements(FixedDoubleArray* dst,
   memmove(dst->data_start() + dst_index,
           src->data_start() + src_index,
           len * kDoubleSize);
-}
-
-
-static void MoveElements(Heap* heap,
-                         AssertNoAllocation* no_gc,
-                         FixedArray* dst,
-                         int dst_index,
-                         FixedArray* src,
-                         int src_index,
-                         int len) {
-  if (len == 0) return;
-  ASSERT(dst->map() != HEAP->fixed_cow_array_map());
-  memmove(dst->data_start() + dst_index,
-          src->data_start() + src_index,
-          len * kPointerSize);
-  WriteBarrierMode mode = dst->GetWriteBarrierMode(*no_gc);
-  if (mode == UPDATE_WRITE_BARRIER) {
-    heap->RecordWrites(dst->address(), dst->OffsetOfElementAt(dst_index), len);
-  }
-  heap->incremental_marking()->RecordWrites(dst);
 }
 
 
@@ -545,12 +525,9 @@ BUILTIN(ArrayPush) {
   }
   if (!maybe_elms_obj->To(&elms_obj)) return maybe_elms_obj;
 
-  if (FLAG_harmony_observation &&
-      JSObject::cast(receiver)->map()->is_observed()) {
-    return CallJsBuiltin(isolate, "ArrayPush", args);
-  }
-
   JSArray* array = JSArray::cast(receiver);
+  ASSERT(!array->map()->is_observed());
+
   ElementsKind kind = array->GetElementsKind();
 
   if (IsFastSmiOrObjectElementsKind(kind)) {
@@ -662,10 +639,7 @@ BUILTIN(ArrayPop) {
   if (!maybe_elms->To(&elms_obj)) return maybe_elms;
 
   JSArray* array = JSArray::cast(receiver);
-
-  if (FLAG_harmony_observation && array->map()->is_observed()) {
-    return CallJsBuiltin(isolate, "ArrayPop", args);
-  }
+  ASSERT(!array->map()->is_observed());
 
   int len = Smi::cast(array->length())->value();
   if (len == 0) return heap->undefined_value();
@@ -700,10 +674,7 @@ BUILTIN(ArrayShift) {
     return CallJsBuiltin(isolate, "ArrayShift", args);
   }
   JSArray* array = JSArray::cast(receiver);
-
-  if (FLAG_harmony_observation && array->map()->is_observed()) {
-    return CallJsBuiltin(isolate, "ArrayShift", args);
-  }
+  ASSERT(!array->map()->is_observed());
 
   int len = Smi::cast(array->length())->value();
   if (len == 0) return heap->undefined_value();
@@ -724,7 +695,7 @@ BUILTIN(ArrayShift) {
     if (elms_obj->IsFixedArray()) {
       FixedArray* elms = FixedArray::cast(elms_obj);
       AssertNoAllocation no_gc;
-      MoveElements(heap, &no_gc, elms, 0, elms, 1, len - 1);
+      heap->MoveElements(elms, 0, 1, len - 1);
       elms->set(len - 1, heap->the_hole_value());
     } else {
       FixedDoubleArray* elms = FixedDoubleArray::cast(elms_obj);
@@ -754,14 +725,11 @@ BUILTIN(ArrayUnshift) {
     return CallJsBuiltin(isolate, "ArrayUnshift", args);
   }
   JSArray* array = JSArray::cast(receiver);
+  ASSERT(!array->map()->is_observed());
   if (!array->HasFastSmiOrObjectElements()) {
     return CallJsBuiltin(isolate, "ArrayUnshift", args);
   }
   FixedArray* elms = FixedArray::cast(elms_obj);
-
-  if (FLAG_harmony_observation && array->map()->is_observed()) {
-    return CallJsBuiltin(isolate, "ArrayUnshift", args);
-  }
 
   int len = Smi::cast(array->length())->value();
   int to_add = args.length() - 1;
@@ -794,7 +762,7 @@ BUILTIN(ArrayUnshift) {
     array->set_elements(elms);
   } else {
     AssertNoAllocation no_gc;
-    MoveElements(heap, &no_gc, elms, to_add, elms, 0, len);
+    heap->MoveElements(elms, to_add, 0, len);
   }
 
   // Add the provided values.
@@ -958,10 +926,7 @@ BUILTIN(ArraySplice) {
     return CallJsBuiltin(isolate, "ArraySplice", args);
   }
   JSArray* array = JSArray::cast(receiver);
-
-  if (FLAG_harmony_observation && array->map()->is_observed()) {
-    return CallJsBuiltin(isolate, "ArraySplice", args);
-  }
+  ASSERT(!array->map()->is_observed());
 
   int len = Smi::cast(array->length())->value();
 
@@ -1060,7 +1025,7 @@ BUILTIN(ArraySplice) {
       } else {
         FixedArray* elms = FixedArray::cast(elms_obj);
         AssertNoAllocation no_gc;
-        MoveElements(heap, &no_gc, elms, delta, elms, 0, actual_start);
+        heap->MoveElements(elms, delta, 0, actual_start);
       }
 
       elms_obj = LeftTrimFixedArray(heap, elms_obj, delta);
@@ -1076,10 +1041,9 @@ BUILTIN(ArraySplice) {
       } else {
         FixedArray* elms = FixedArray::cast(elms_obj);
         AssertNoAllocation no_gc;
-        MoveElements(heap, &no_gc,
-                     elms, actual_start + item_count,
-                     elms, actual_start + actual_delete_count,
-                     (len - actual_delete_count - actual_start));
+        heap->MoveElements(elms, actual_start + item_count,
+                           actual_start + actual_delete_count,
+                           (len - actual_delete_count - actual_start));
         FillWithHoles(heap, elms, new_length, len);
       }
     }
@@ -1119,10 +1083,9 @@ BUILTIN(ArraySplice) {
       elms_changed = true;
     } else {
       AssertNoAllocation no_gc;
-      MoveElements(heap, &no_gc,
-                   elms, actual_start + item_count,
-                   elms, actual_start + actual_delete_count,
-                   (len - actual_delete_count - actual_start));
+      heap->MoveElements(elms, actual_start + item_count,
+                         actual_start + actual_delete_count,
+                         (len - actual_delete_count - actual_start));
     }
   }
 
@@ -1243,7 +1206,7 @@ BUILTIN(ArrayConcat) {
 
 
 BUILTIN(StrictModePoisonPill) {
-  HandleScope scope;
+  HandleScope scope(isolate);
   return isolate->Throw(*isolate->factory()->NewTypeError(
       "strict_poison_pill", HandleVector<Object>(NULL, 0)));
 }
@@ -1259,7 +1222,7 @@ static inline Object* FindHidden(Heap* heap,
                                  Object* object,
                                  FunctionTemplateInfo* type) {
   if (object->IsInstanceOf(type)) return object;
-  Object* proto = object->GetPrototype();
+  Object* proto = object->GetPrototype(heap->isolate());
   if (proto->IsJSObject() &&
       JSObject::cast(proto)->map()->is_hidden_prototype()) {
     return FindHidden(heap, proto, type);
@@ -1475,26 +1438,6 @@ BUILTIN(HandleApiCallAsConstructor) {
 }
 
 
-static void Generate_LoadIC_ArrayLength(MacroAssembler* masm) {
-  LoadIC::GenerateArrayLength(masm);
-}
-
-
-static void Generate_LoadIC_StringLength(MacroAssembler* masm) {
-  LoadIC::GenerateStringLength(masm, false);
-}
-
-
-static void Generate_LoadIC_StringWrapperLength(MacroAssembler* masm) {
-  LoadIC::GenerateStringLength(masm, true);
-}
-
-
-static void Generate_LoadIC_FunctionPrototype(MacroAssembler* masm) {
-  LoadIC::GenerateFunctionPrototype(masm);
-}
-
-
 static void Generate_LoadIC_Initialize(MacroAssembler* masm) {
   LoadIC::GenerateInitialize(masm);
 }
@@ -1536,12 +1479,12 @@ static void Generate_KeyedLoadIC_Slow(MacroAssembler* masm) {
 
 
 static void Generate_KeyedLoadIC_Miss(MacroAssembler* masm) {
-  KeyedLoadIC::GenerateMiss(masm, false);
+  KeyedLoadIC::GenerateMiss(masm, MISS);
 }
 
 
 static void Generate_KeyedLoadIC_MissForceGeneric(MacroAssembler* masm) {
-  KeyedLoadIC::GenerateMiss(masm, true);
+  KeyedLoadIC::GenerateMiss(masm, MISS_FORCE_GENERIC);
 }
 
 
@@ -1602,16 +1545,6 @@ static void Generate_StoreIC_Megamorphic_Strict(MacroAssembler* masm) {
 }
 
 
-static void Generate_StoreIC_ArrayLength(MacroAssembler* masm) {
-  StoreIC::GenerateArrayLength(masm);
-}
-
-
-static void Generate_StoreIC_ArrayLength_Strict(MacroAssembler* masm) {
-  StoreIC::GenerateArrayLength(masm);
-}
-
-
 static void Generate_StoreIC_GlobalProxy(MacroAssembler* masm) {
   StoreIC::GenerateGlobalProxy(masm, kNonStrictMode);
 }
@@ -1638,12 +1571,12 @@ static void Generate_KeyedStoreIC_Generic_Strict(MacroAssembler* masm) {
 
 
 static void Generate_KeyedStoreIC_Miss(MacroAssembler* masm) {
-  KeyedStoreIC::GenerateMiss(masm, false);
+  KeyedStoreIC::GenerateMiss(masm, MISS);
 }
 
 
 static void Generate_KeyedStoreIC_MissForceGeneric(MacroAssembler* masm) {
-  KeyedStoreIC::GenerateMiss(masm, true);
+  KeyedStoreIC::GenerateMiss(masm, MISS_FORCE_GENERIC);
 }
 
 

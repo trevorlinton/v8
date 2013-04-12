@@ -371,7 +371,7 @@ observer.assertCallbackRecords([
   { object: obj, name: "a", type: "new" },
   { object: obj, name: "a", type: "updated", oldValue: 4 },
   { object: obj, name: "a", type: "updated", oldValue: 5 },
-  { object: obj, name: "a", type: "reconfigured", oldValue: 6 },
+  { object: obj, name: "a", type: "reconfigured" },
   { object: obj, name: "a", type: "updated", oldValue: 6 },
   { object: obj, name: "a", type: "reconfigured", oldValue: 8 },
   { object: obj, name: "a", type: "reconfigured", oldValue: 7 },
@@ -429,7 +429,7 @@ observer.assertCallbackRecords([
   { object: obj, name: "1", type: "new" },
   { object: obj, name: "1", type: "updated", oldValue: 4 },
   { object: obj, name: "1", type: "updated", oldValue: 5 },
-  { object: obj, name: "1", type: "reconfigured", oldValue: 6 },
+  { object: obj, name: "1", type: "reconfigured" },
   { object: obj, name: "1", type: "updated", oldValue: 6 },
   { object: obj, name: "1", type: "reconfigured", oldValue: 8 },
   { object: obj, name: "1", type: "reconfigured", oldValue: 7 },
@@ -493,7 +493,7 @@ function TestObserveConfigurable(obj, prop) {
     { object: obj, name: prop, type: "new" },
     { object: obj, name: prop, type: "updated", oldValue: 4 },
     { object: obj, name: prop, type: "updated", oldValue: 5 },
-    { object: obj, name: prop, type: "reconfigured", oldValue: 6 },
+    { object: obj, name: prop, type: "reconfigured" },
     { object: obj, name: prop, type: "updated", oldValue: 6 },
     { object: obj, name: prop, type: "reconfigured", oldValue: 8 },
     { object: obj, name: prop, type: "reconfigured", oldValue: 7 },
@@ -537,7 +537,7 @@ function TestObserveNonConfigurable(obj, prop, desc) {
     { object: obj, name: prop, type: "updated", oldValue: 4 },
     { object: obj, name: prop, type: "updated", oldValue: 5 },
     { object: obj, name: prop, type: "updated", oldValue: 6 },
-    { object: obj, name: prop, type: "reconfigured", oldValue: 7 },
+    { object: obj, name: prop, type: "reconfigured" },
   ]);
   Object.unobserve(obj, observer.callback);
 }
@@ -626,16 +626,15 @@ var arr2 = ['alpha', 'beta'];
 var arr3 = ['hello'];
 arr3[2] = 'goodbye';
 arr3.length = 6;
-// TODO(adamk): Enable this test case when it can run in a reasonable
-// amount of time.
-//var slow_arr = new Array(1000000000);
-//slow_arr[500000000] = 'hello';
+var slow_arr = new Array(1000000000);
+slow_arr[500000000] = 'hello';
 Object.defineProperty(arr, '0', {configurable: false});
 Object.defineProperty(arr, '2', {get: function(){}});
 Object.defineProperty(arr2, '0', {get: function(){}, configurable: false});
 Object.observe(arr, observer.callback);
 Object.observe(arr2, observer.callback);
 Object.observe(arr3, observer.callback);
+Object.observe(slow_arr, observer.callback);
 arr.length = 2;
 arr.length = 0;
 arr.length = 10;
@@ -649,6 +648,7 @@ arr3.length++;
 arr3.length /= 2;
 Object.defineProperty(arr3, 'length', {value: 5});
 Object.defineProperty(arr3, 'length', {value: 10, writable: false});
+slow_arr.length = 100;
 Object.deliverChangeRecords(observer.callback);
 observer.assertCallbackRecords([
   { object: arr, name: '3', type: 'deleted', oldValue: 'd' },
@@ -657,7 +657,7 @@ observer.assertCallbackRecords([
   { object: arr, name: '1', type: 'deleted', oldValue: 'b' },
   { object: arr, name: 'length', type: 'updated', oldValue: 2 },
   { object: arr, name: 'length', type: 'updated', oldValue: 1 },
-  { object: arr, name: 'length', type: 'reconfigured', oldValue: 10 },
+  { object: arr, name: 'length', type: 'reconfigured' },
   { object: arr2, name: '1', type: 'deleted', oldValue: 'beta' },
   { object: arr2, name: 'length', type: 'updated', oldValue: 2 },
   { object: arr2, name: 'length', type: 'reconfigured', oldValue: 1 },
@@ -669,6 +669,8 @@ observer.assertCallbackRecords([
   { object: arr3, name: 'length', type: 'updated', oldValue: 2 },
   { object: arr3, name: 'length', type: 'updated', oldValue: 1 },
   { object: arr3, name: 'length', type: 'reconfigured', oldValue: 5 },
+  { object: slow_arr, name: '500000000', type: 'deleted', oldValue: 'hello' },
+  { object: slow_arr, name: 'length', type: 'updated', oldValue: 1000000000 },
 ]);
 
 
@@ -896,7 +898,7 @@ var q = {bar: 'no'};
 obj.__proto__ = p;
 obj.__proto__ = p;  // ignored
 obj.__proto__ = null;
-obj.__proto__ = q;
+obj.__proto__ = q;  // the __proto__ accessor is gone
 // TODO(adamk): Add tests for objects with hidden prototypes
 // once we support observing the global object.
 Object.deliverChangeRecords(observer.callback);
@@ -904,7 +906,7 @@ observer.assertCallbackRecords([
   { object: obj, name: '__proto__', type: 'prototype',
     oldValue: Object.prototype },
   { object: obj, name: '__proto__', type: 'prototype', oldValue: p },
-  { object: obj, name: '__proto__', type: 'prototype', oldValue: null },
+  { object: obj, name: '__proto__', type: 'new' },
 ]);
 
 

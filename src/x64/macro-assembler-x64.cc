@@ -546,13 +546,13 @@ void MacroAssembler::Abort(const char* msg) {
 
 void MacroAssembler::CallStub(CodeStub* stub, TypeFeedbackId ast_id) {
   ASSERT(AllowThisStubCall(stub));  // Calls are not allowed in some stubs
-  Call(stub->GetCode(), RelocInfo::CODE_TARGET, ast_id);
+  Call(stub->GetCode(isolate()), RelocInfo::CODE_TARGET, ast_id);
 }
 
 
 void MacroAssembler::TailCallStub(CodeStub* stub) {
   ASSERT(allow_stub_calls_ || stub->CompilingCallsToThisStubIsGCSafe());
-  Jump(stub->GetCode(), RelocInfo::CODE_TARGET);
+  Jump(stub->GetCode(isolate()), RelocInfo::CODE_TARGET);
 }
 
 
@@ -701,13 +701,13 @@ void MacroAssembler::CallApiFunctionAndReturn(Address function_address,
 
   Factory* factory = isolate()->factory();
   ExternalReference next_address =
-      ExternalReference::handle_scope_next_address();
+      ExternalReference::handle_scope_next_address(isolate());
   const int kNextOffset = 0;
   const int kLimitOffset = Offset(
-      ExternalReference::handle_scope_limit_address(),
+      ExternalReference::handle_scope_limit_address(isolate()),
       next_address);
   const int kLevelOffset = Offset(
-      ExternalReference::handle_scope_level_address(),
+      ExternalReference::handle_scope_level_address(isolate()),
       next_address);
   ExternalReference scheduled_exception_address =
       ExternalReference::scheduled_exception_address(isolate());
@@ -834,7 +834,7 @@ void MacroAssembler::JumpToExternalReference(const ExternalReference& ext,
   // Set the entry point and jump to the C entry runtime stub.
   LoadAddress(rbx, ext);
   CEntryStub ces(result_size);
-  jmp(ces.GetCode(), RelocInfo::CODE_TARGET);
+  jmp(ces.GetCode(isolate()), RelocInfo::CODE_TARGET);
 }
 
 
@@ -899,8 +899,8 @@ void MacroAssembler::PushCallerSaved(SaveFPRegsMode fp_mode,
   // R12 to r15 are callee save on all platforms.
   if (fp_mode == kSaveFPRegs) {
     CpuFeatures::Scope scope(SSE2);
-    subq(rsp, Immediate(kDoubleSize * XMMRegister::kNumRegisters));
-    for (int i = 0; i < XMMRegister::kNumRegisters; i++) {
+    subq(rsp, Immediate(kDoubleSize * XMMRegister::kMaxNumRegisters));
+    for (int i = 0; i < XMMRegister::kMaxNumRegisters; i++) {
       XMMRegister reg = XMMRegister::from_code(i);
       movsd(Operand(rsp, i * kDoubleSize), reg);
     }
@@ -914,11 +914,11 @@ void MacroAssembler::PopCallerSaved(SaveFPRegsMode fp_mode,
                                     Register exclusion3) {
   if (fp_mode == kSaveFPRegs) {
     CpuFeatures::Scope scope(SSE2);
-    for (int i = 0; i < XMMRegister::kNumRegisters; i++) {
+    for (int i = 0; i < XMMRegister::kMaxNumRegisters; i++) {
       XMMRegister reg = XMMRegister::from_code(i);
       movsd(reg, Operand(rsp, i * kDoubleSize));
     }
-    addq(rsp, Immediate(kDoubleSize * XMMRegister::kNumRegisters));
+    addq(rsp, Immediate(kDoubleSize * XMMRegister::kMaxNumRegisters));
   }
   for (int i = kNumberOfSavedRegs - 1; i >= 0; i--) {
     Register reg = saved_regs[i];
@@ -2218,19 +2218,16 @@ void MacroAssembler::JumpIfNotBothSequentialAsciiStrings(
   // Check that both are flat ASCII strings.
   ASSERT(kNotStringTag != 0);
   const int kFlatAsciiStringMask =
-      kIsNotStringMask | kStringEncodingMask | kAsciiDataHintMask |
-      kStringRepresentationMask;
+      kIsNotStringMask | kStringRepresentationMask | kStringEncodingMask;
   const int kFlatAsciiStringTag = ASCII_STRING_TYPE;
 
   andl(scratch1, Immediate(kFlatAsciiStringMask));
   andl(scratch2, Immediate(kFlatAsciiStringMask));
   // Interleave the bits to check both scratch1 and scratch2 in one test.
-  ASSERT_EQ(0, kFlatAsciiStringMask & (kFlatAsciiStringMask << 8));
-  ASSERT_EQ(ASCII_STRING_TYPE, ASCII_STRING_TYPE & kFlatAsciiStringMask);
-  shl(scratch1, Immediate(8));
-  orl(scratch1, scratch2);
+  ASSERT_EQ(0, kFlatAsciiStringMask & (kFlatAsciiStringMask << 3));
+  lea(scratch1, Operand(scratch1, scratch2, times_8, 0));
   cmpl(scratch1,
-       Immediate(kFlatAsciiStringTag + (kFlatAsciiStringTag << 8)));
+       Immediate(kFlatAsciiStringTag + (kFlatAsciiStringTag << 3)));
   j(not_equal, on_fail, near_jump);
 }
 
@@ -2266,19 +2263,17 @@ void MacroAssembler::JumpIfBothInstanceTypesAreNotSequentialAscii(
 
   // Check that both are flat ASCII strings.
   ASSERT(kNotStringTag != 0);
-  const int kFlatAsciiStringMask = kIsNotStringMask | kStringRepresentationMask
-          | kStringEncodingMask | kAsciiDataHintTag;
+  const int kFlatAsciiStringMask =
+      kIsNotStringMask | kStringRepresentationMask | kStringEncodingMask;
   const int kFlatAsciiStringTag = ASCII_STRING_TYPE;
 
   andl(scratch1, Immediate(kFlatAsciiStringMask));
   andl(scratch2, Immediate(kFlatAsciiStringMask));
   // Interleave the bits to check both scratch1 and scratch2 in one test.
-  ASSERT_EQ(0, kFlatAsciiStringMask & (kFlatAsciiStringMask << 8));
-  ASSERT_EQ(ASCII_STRING_TYPE, ASCII_STRING_TYPE & kFlatAsciiStringMask);
-  shl(scratch1, Immediate(8));
-  orl(scratch1, scratch2);
+  ASSERT_EQ(0, kFlatAsciiStringMask & (kFlatAsciiStringMask << 3));
+  lea(scratch1, Operand(scratch1, scratch2, times_8, 0));
   cmpl(scratch1,
-       Immediate(kFlatAsciiStringTag + (kFlatAsciiStringTag << 8)));
+       Immediate(kFlatAsciiStringTag + (kFlatAsciiStringTag << 3)));
   j(not_equal, on_fail, near_jump);
 }
 
@@ -2916,23 +2911,14 @@ void MacroAssembler::ClampDoubleToUint8(XMMRegister input_reg,
 }
 
 
-static double kUint32Bias =
-    static_cast<double>(static_cast<uint32_t>(0xFFFFFFFF)) + 1;
-
-
 void MacroAssembler::LoadUint32(XMMRegister dst,
                                 Register src,
                                 XMMRegister scratch) {
-  Label done;
-  cmpl(src, Immediate(0));
-  movq(kScratchRegister,
-       reinterpret_cast<int64_t>(&kUint32Bias),
-       RelocInfo::NONE64);
-  movsd(scratch, Operand(kScratchRegister, 0));
-  cvtlsi2sd(dst, src);
-  j(not_sign, &done, Label::kNear);
-  addsd(dst, scratch);
-  bind(&done);
+  if (FLAG_debug_code) {
+    cmpq(src, Immediate(0xffffffff));
+    Assert(below_equal, "input GPR is expected to have upper32 cleared");
+  }
+  cvtqsi2sd(dst, src);
 }
 
 
@@ -3153,7 +3139,7 @@ void MacroAssembler::DebugBreak() {
   LoadAddress(rbx, ExternalReference(Runtime::kDebugBreak, isolate()));
   CEntryStub ces(1);
   ASSERT(AllowThisStubCall(&ces));
-  Call(ces.GetCode(), RelocInfo::DEBUG_BREAK);
+  Call(ces.GetCode(isolate()), RelocInfo::DEBUG_BREAK);
 }
 #endif  // ENABLE_DEBUGGER_SUPPORT
 
@@ -3428,7 +3414,7 @@ void MacroAssembler::EnterExitFrameEpilogue(int arg_stack_space,
 #endif
   // Optionally save all XMM registers.
   if (save_doubles) {
-    int space = XMMRegister::kNumRegisters * kDoubleSize +
+    int space = XMMRegister::kMaxNumRegisters * kDoubleSize +
         arg_stack_space * kPointerSize;
     subq(rsp, Immediate(space));
     int offset = -2 * kPointerSize;
@@ -3882,8 +3868,7 @@ void MacroAssembler::AllocateInNewSpace(Register object_size,
                                         Register scratch,
                                         Label* gc_required,
                                         AllocationFlags flags) {
-  ASSERT((flags & (DOUBLE_ALIGNMENT | RESULT_CONTAINS_TOP |
-                   SIZE_IN_WORDS)) == 0);
+  ASSERT((flags & (RESULT_CONTAINS_TOP | SIZE_IN_WORDS)) == 0);
   if (!FLAG_inline_new) {
     if (emit_debug_code()) {
       // Trash the registers to simulate an allocation failure.
@@ -3916,6 +3901,13 @@ void MacroAssembler::AllocateInNewSpace(Register object_size,
 
   // Update allocation top.
   UpdateAllocationTopHelper(result_end, scratch);
+
+  // Align the next allocation. Storing the filler map without checking top is
+  // always safe because the limit of the heap is always aligned.
+  if (((flags & DOUBLE_ALIGNMENT) != 0) && FLAG_debug_code) {
+    testq(result, Immediate(kDoubleAlignmentMask));
+    Check(zero, "Allocation is not double aligned");
+  }
 
   // Tag the result if requested.
   if ((flags & TAG_OBJECT) != 0) {
@@ -4607,6 +4599,27 @@ void MacroAssembler::CheckEnumCache(Register null_value, Label* call_runtime) {
   movq(rcx, FieldOperand(rbx, Map::kPrototypeOffset));
   cmpq(rcx, null_value);
   j(not_equal, &next);
+}
+
+void MacroAssembler::TestJSArrayForAllocationSiteInfo(
+    Register receiver_reg,
+    Register scratch_reg) {
+  Label no_info_available;
+  ExternalReference new_space_start =
+      ExternalReference::new_space_start(isolate());
+  ExternalReference new_space_allocation_top =
+      ExternalReference::new_space_allocation_top_address(isolate());
+
+  lea(scratch_reg, Operand(receiver_reg,
+      JSArray::kSize + AllocationSiteInfo::kSize - kHeapObjectTag));
+  movq(kScratchRegister, new_space_start);
+  cmpq(scratch_reg, kScratchRegister);
+  j(less, &no_info_available);
+  cmpq(scratch_reg, ExternalOperand(new_space_allocation_top));
+  j(greater, &no_info_available);
+  CompareRoot(MemOperand(scratch_reg, -AllocationSiteInfo::kSize),
+              Heap::kAllocationSiteInfoMapRootIndex);
+  bind(&no_info_available);
 }
 
 

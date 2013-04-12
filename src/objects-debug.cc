@@ -30,6 +30,7 @@
 #include "disassembler.h"
 #include "disasm.h"
 #include "jsregexp.h"
+#include "macro-assembler.h"
 #include "objects-visiting.h"
 
 namespace v8 {
@@ -328,6 +329,15 @@ void Map::SharedMapVerify() {
 }
 
 
+void Map::VerifyOmittedPrototypeChecks() {
+  if (!FLAG_omit_prototype_checks_for_leaf_maps) return;
+  if (HasTransitionArray() || is_dictionary_map()) {
+    CHECK_EQ(0, dependent_code()->number_of_entries(
+        DependentCode::kPrototypeCheckGroup));
+  }
+}
+
+
 void CodeCache::CodeCacheVerify() {
   VerifyHeapPointer(default_cache());
   VerifyHeapPointer(normal_type_cache());
@@ -473,7 +483,9 @@ void String::StringVerify() {
 
 
 void SeqOneByteString::SeqOneByteStringVerify() {
+#ifndef ENABLE_LATIN_1
   CHECK(String::IsAscii(GetChars(), length()));
+#endif
 }
 
 
@@ -593,6 +605,22 @@ void Code::CodeVerify() {
 }
 
 
+void Code::VerifyEmbeddedMapsDependency() {
+  int mode_mask = RelocInfo::ModeMask(RelocInfo::EMBEDDED_OBJECT);
+  for (RelocIterator it(this, mode_mask); !it.done(); it.next()) {
+    RelocInfo::Mode mode = it.rinfo()->rmode();
+    if (mode == RelocInfo::EMBEDDED_OBJECT &&
+      it.rinfo()->target_object()->IsMap()) {
+      Map* map = Map::cast(it.rinfo()->target_object());
+      if (map->CanTransition()) {
+        CHECK(map->dependent_code()->Contains(
+            DependentCode::kWeaklyEmbeddedGroup, this));
+      }
+    }
+  }
+}
+
+
 void JSArray::JSArrayVerify() {
   JSObjectVerify();
   CHECK(length()->IsNumber() || length()->IsUndefined());
@@ -689,13 +717,31 @@ void Foreign::ForeignVerify() {
 
 
 void AccessorInfo::AccessorInfoVerify() {
-  CHECK(IsAccessorInfo());
-  VerifyPointer(getter());
-  VerifyPointer(setter());
   VerifyPointer(name());
-  VerifyPointer(data());
   VerifyPointer(flag());
   VerifyPointer(expected_receiver_type());
+}
+
+
+void ExecutableAccessorInfo::ExecutableAccessorInfoVerify() {
+  CHECK(IsExecutableAccessorInfo());
+  AccessorInfoVerify();
+  VerifyPointer(getter());
+  VerifyPointer(setter());
+  VerifyPointer(data());
+}
+
+
+void DeclaredAccessorDescriptor::DeclaredAccessorDescriptorVerify() {
+  CHECK(IsDeclaredAccessorDescriptor());
+  VerifySmiField(kInternalFieldOffset);
+}
+
+
+void DeclaredAccessorInfo::DeclaredAccessorInfoVerify() {
+  CHECK(IsDeclaredAccessorInfo());
+  AccessorInfoVerify();
+  VerifyPointer(descriptor());
 }
 
 
@@ -771,6 +817,13 @@ void SignatureInfo::SignatureInfoVerify() {
 void TypeSwitchInfo::TypeSwitchInfoVerify() {
   CHECK(IsTypeSwitchInfo());
   VerifyPointer(types());
+}
+
+
+void AllocationSiteInfo::AllocationSiteInfoVerify() {
+  CHECK(IsAllocationSiteInfo());
+  VerifyHeapPointer(payload());
+  CHECK(payload()->IsObject());
 }
 
 

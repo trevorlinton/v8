@@ -45,8 +45,7 @@ namespace v8 {
 namespace internal {
 
 
-int HandleScope::NumberOfHandles() {
-  Isolate* isolate = Isolate::Current();
+int HandleScope::NumberOfHandles(Isolate* isolate) {
   HandleScopeImplementer* impl = isolate->handle_scope_implementer();
   int n = impl->blocks()->length();
   if (n == 0) return 0;
@@ -55,8 +54,7 @@ int HandleScope::NumberOfHandles() {
 }
 
 
-Object** HandleScope::Extend() {
-  Isolate* isolate = Isolate::Current();
+Object** HandleScope::Extend(Isolate* isolate) {
   v8::ImplementationUtilities::HandleScopeData* current =
       isolate->handle_scope_data();
 
@@ -97,7 +95,6 @@ Object** HandleScope::Extend() {
 
 
 void HandleScope::DeleteExtensions(Isolate* isolate) {
-  ASSERT(isolate == Isolate::Current());
   v8::ImplementationUtilities::HandleScopeData* current =
       isolate->handle_scope_data();
   isolate->handle_scope_implementer()->DeleteExtensions(current->limit);
@@ -112,21 +109,18 @@ void HandleScope::ZapRange(Object** start, Object** end) {
 }
 
 
-Address HandleScope::current_level_address() {
-  return reinterpret_cast<Address>(
-      &Isolate::Current()->handle_scope_data()->level);
+Address HandleScope::current_level_address(Isolate* isolate) {
+  return reinterpret_cast<Address>(&isolate->handle_scope_data()->level);
 }
 
 
-Address HandleScope::current_next_address() {
-  return reinterpret_cast<Address>(
-      &Isolate::Current()->handle_scope_data()->next);
+Address HandleScope::current_next_address(Isolate* isolate) {
+  return reinterpret_cast<Address>(&isolate->handle_scope_data()->next);
 }
 
 
-Address HandleScope::current_limit_address() {
-  return reinterpret_cast<Address>(
-      &Isolate::Current()->handle_scope_data()->limit);
+Address HandleScope::current_limit_address(Isolate* isolate) {
+  return reinterpret_cast<Address>(&isolate->handle_scope_data()->limit);
 }
 
 
@@ -287,9 +281,9 @@ Handle<Object> GetProperty(Handle<JSReceiver> obj,
 }
 
 
-Handle<Object> GetProperty(Handle<Object> obj,
+Handle<Object> GetProperty(Isolate* isolate,
+                           Handle<Object> obj,
                            Handle<Object> key) {
-  Isolate* isolate = Isolate::Current();
   CALL_HEAP_FUNCTION(isolate,
                      Runtime::GetObjectProperty(isolate, obj, key), Object);
 }
@@ -315,8 +309,8 @@ Handle<Object> SetPrototype(Handle<JSObject> obj, Handle<Object> value) {
 }
 
 
-Handle<Object> LookupSingleCharacterStringFromCode(uint32_t index) {
-  Isolate* isolate = Isolate::Current();
+Handle<Object> LookupSingleCharacterStringFromCode(Isolate* isolate,
+                                                   uint32_t index) {
   CALL_HEAP_FUNCTION(
       isolate,
       isolate->heap()->LookupSingleCharacterStringFromCode(index), Object);
@@ -350,14 +344,16 @@ Handle<Object> SetAccessor(Handle<JSObject> obj, Handle<AccessorInfo> info) {
 // collector will call the weak callback on the global handle
 // associated with the wrapper and get rid of both the wrapper and the
 // handle.
-static void ClearWrapperCache(Persistent<v8::Value> handle, void*) {
+static void ClearWrapperCache(v8::Isolate* v8_isolate,
+                              Persistent<v8::Value> handle,
+                              void*) {
   Handle<Object> cache = Utils::OpenHandle(*handle);
   JSValue* wrapper = JSValue::cast(*cache);
   Foreign* foreign = Script::cast(wrapper->value())->wrapper();
   ASSERT(foreign->foreign_address() ==
          reinterpret_cast<Address>(cache.location()));
   foreign->set_foreign_address(0);
-  Isolate* isolate = Isolate::Current();
+  Isolate* isolate = reinterpret_cast<Isolate*>(v8_isolate);
   isolate->global_handles()->Destroy(cache.location());
   isolate->counters()->script_wrappers()->Decrement();
 }
@@ -369,19 +365,30 @@ Handle<JSValue> GetScriptWrapper(Handle<Script> script) {
     return Handle<JSValue>(
         reinterpret_cast<JSValue**>(script->wrapper()->foreign_address()));
   }
-  Isolate* isolate = Isolate::Current();
+  Isolate* isolate = script->GetIsolate();
   // Construct a new script wrapper.
   isolate->counters()->script_wrappers()->Increment();
   Handle<JSFunction> constructor = isolate->script_function();
   Handle<JSValue> result =
       Handle<JSValue>::cast(isolate->factory()->NewJSObject(constructor));
+
+  // The allocation might have triggered a GC, which could have called this
+  // function recursively, and a wrapper has already been created and cached.
+  // In that case, simply return the cached wrapper.
+  if (script->wrapper()->foreign_address() != NULL) {
+    return Handle<JSValue>(
+        reinterpret_cast<JSValue**>(script->wrapper()->foreign_address()));
+  }
+
   result->set_value(*script);
 
   // Create a new weak global handle and use it to cache the wrapper
   // for future use. The cache will automatically be cleared by the
   // garbage collector when it is not used anymore.
   Handle<Object> handle = isolate->global_handles()->Create(*result);
-  isolate->global_handles()->MakeWeak(handle.location(), NULL,
+  isolate->global_handles()->MakeWeak(handle.location(),
+                                      NULL,
+                                      NULL,
                                       &ClearWrapperCache);
   script->wrapper()->set_foreign_address(
       reinterpret_cast<Address>(handle.location()));
@@ -423,7 +430,7 @@ static void CalculateLineEnds(Isolate* isolate,
                               Vector<const SourceChar> src,
                               bool with_last_line) {
   const int src_len = src.length();
-  StringSearch<char, SourceChar> search(isolate, CStrVector("\n"));
+  StringSearch<uint8_t, SourceChar> search(isolate, STATIC_ASCII_VECTOR("\n"));
 
   // Find and record line ends.
   int position = 0;
@@ -457,7 +464,7 @@ Handle<FixedArray> CalculateLineEnds(Handle<String> src,
     if (content.IsAscii()) {
       CalculateLineEnds(isolate,
                         &line_ends,
-                        content.ToAsciiVector(),
+                        content.ToOneByteVector(),
                         with_last_line);
     } else {
       CalculateLineEnds(isolate,
@@ -599,7 +606,8 @@ Handle<Object> GetScriptNameOrSourceURL(Handle<Script> script) {
       isolate->factory()->LookupOneByteSymbol(
           STATIC_ASCII_VECTOR("nameOrSourceURL"));
   Handle<JSValue> script_wrapper = GetScriptWrapper(script);
-  Handle<Object> property = GetProperty(script_wrapper,
+  Handle<Object> property = GetProperty(isolate,
+                                        script_wrapper,
                                         name_or_source_url_key);
   ASSERT(property->IsJSFunction());
   Handle<JSFunction> method = Handle<JSFunction>::cast(property);
@@ -639,7 +647,7 @@ Handle<FixedArray> GetKeysInFixedArrayFor(Handle<JSReceiver> object,
   // Only collect keys if access is permitted.
   for (Handle<Object> p = object;
        *p != isolate->heap()->null_value();
-       p = Handle<Object>(p->GetPrototype(), isolate)) {
+       p = Handle<Object>(p->GetPrototype(isolate), isolate)) {
     if (p->IsJSProxy()) {
       Handle<JSProxy> proxy(JSProxy::cast(*p), isolate);
       Handle<Object> args[] = { proxy };
@@ -885,7 +893,6 @@ Handle<ObjectHashTable> PutIntoObjectHashTable(Handle<ObjectHashTable> table,
 
 DeferredHandleScope::DeferredHandleScope(Isolate* isolate)
     : impl_(isolate->handle_scope_implementer()) {
-  ASSERT(impl_->isolate() == Isolate::Current());
   impl_->BeginDeferredScope();
   v8::ImplementationUtilities::HandleScopeData* data =
       impl_->isolate()->handle_scope_data();

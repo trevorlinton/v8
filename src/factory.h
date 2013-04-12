@@ -84,7 +84,7 @@ class Factory {
     return LookupUtf8Symbol(CStrVector(str));
   }
   Handle<String> LookupSymbol(Handle<String> str);
-  Handle<String> LookupOneByteSymbol(Vector<const char> str);
+  Handle<String> LookupOneByteSymbol(Vector<const uint8_t> str);
   Handle<String> LookupOneByteSymbol(Handle<SeqOneByteString>,
                                    int from,
                                    int length);
@@ -113,9 +113,15 @@ class Factory {
   //     two byte.
   //
   // ASCII strings are pretenured when used as keys in the SourceCodeCache.
-  Handle<String> NewStringFromAscii(
-      Vector<const char> str,
+  Handle<String> NewStringFromOneByte(
+      Vector<const uint8_t> str,
       PretenureFlag pretenure = NOT_TENURED);
+  // TODO(dcarney): remove this function.
+  inline Handle<String> NewStringFromAscii(
+      Vector<const char> str,
+      PretenureFlag pretenure = NOT_TENURED) {
+    return NewStringFromOneByte(Vector<const uint8_t>::cast(str), pretenure);
+  }
 
   // UTF8 strings are pretenured when used for regexp literal patterns and
   // flags in the parser.
@@ -196,7 +202,9 @@ class Factory {
   // the old generation).
   Handle<Struct> NewStruct(InstanceType type);
 
-  Handle<AccessorInfo> NewAccessorInfo();
+  Handle<DeclaredAccessorInfo> NewDeclaredAccessorInfo();
+
+  Handle<ExecutableAccessorInfo> NewExecutableAccessorInfo();
 
   Handle<Script> NewScript(Handle<String> source);
 
@@ -270,7 +278,8 @@ class Factory {
 
   // JS objects are pretenured when allocated by the bootstrapper and
   // runtime.
-  Handle<JSObject> NewJSObjectFromMap(Handle<Map> map);
+  Handle<JSObject> NewJSObjectFromMap(Handle<Map> map,
+                                      PretenureFlag pretenure = NOT_TENURED);
 
   // JS modules are pretenured.
   Handle<JSModule> NewJSModule(Handle<Context> context,
