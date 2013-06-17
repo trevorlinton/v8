@@ -29,10 +29,12 @@
 #define V8_ARM_LITHIUM_CODEGEN_ARM_H_
 
 #include "arm/lithium-arm.h"
+
 #include "arm/lithium-gap-resolver-arm.h"
 #include "deoptimizer.h"
 #include "safepoint-table.h"
 #include "scopes.h"
+#include "v8utils.h"
 
 namespace v8 {
 namespace internal {
@@ -55,6 +57,7 @@ class LCodeGen BASE_EMBEDDED {
         deopt_jump_table_(4, info->zone()),
         deoptimization_literals_(8, info->zone()),
         prototype_maps_(0, info->zone()),
+        transition_maps_(0, info->zone()),
         inlined_function_count_(0),
         scope_(info->scope()),
         status_(UNUSED),
@@ -78,13 +81,27 @@ class LCodeGen BASE_EMBEDDED {
   Heap* heap() const { return isolate()->heap(); }
   Zone* zone() const { return zone_; }
 
+  // TODO(svenpanne) Use this consistently.
+  int LookupDestination(int block_id) const {
+    return chunk()->LookupDestination(block_id);
+  }
+
+  bool IsNextEmittedBlock(int block_id) const {
+    return LookupDestination(block_id) == GetNextEmittedBlock();
+  }
+
   bool NeedsEagerFrame() const {
     return GetStackSlotCount() > 0 ||
         info()->is_non_deferred_calling() ||
-        !info()->IsStub();
+        !info()->IsStub() ||
+        info()->requires_frame();
   }
   bool NeedsDeferredFrame() const {
     return !NeedsEagerFrame() && info()->is_deferred_calling();
+  }
+
+  LinkRegisterStatus GetLinkRegisterState() const {
+    return frame_is_built_ ? kLRHasBeenSaved : kLRHasNotBeenSaved;
   }
 
   // Support for converting LOperands to assembler types.
@@ -133,7 +150,7 @@ class LCodeGen BASE_EMBEDDED {
                             IntegerSignedness signedness);
 
   void DoDeferredTaggedToI(LTaggedToI* instr);
-  void DoDeferredMathAbsTaggedHeapNumber(LUnaryMathOperation* instr);
+  void DoDeferredMathAbsTaggedHeapNumber(LMathAbs* instr);
   void DoDeferredStackCheck(LStackCheck* instr);
   void DoDeferredRandom(LRandom* instr);
   void DoDeferredStringCharCodeAt(LStringCharCodeAt* instr);
@@ -189,12 +206,12 @@ class LCodeGen BASE_EMBEDDED {
 
   LPlatformChunk* chunk() const { return chunk_; }
   Scope* scope() const { return scope_; }
-  HGraph* graph() const { return chunk_->graph(); }
+  HGraph* graph() const { return chunk()->graph(); }
 
   Register scratch0() { return r9; }
   DwVfpRegister double_scratch0() { return kScratchDoubleReg; }
 
-  int GetNextEmittedBlock(int block);
+  int GetNextEmittedBlock() const;
   LInstruction* GetNextInstruction();
 
   void EmitClassOfTest(Label* if_true,
@@ -205,10 +222,9 @@ class LCodeGen BASE_EMBEDDED {
                        Register temporary2);
 
   int GetStackSlotCount() const { return chunk()->spill_slot_count(); }
-  int GetParameterCount() const { return info()->num_parameters(); }
 
   void Abort(const char* reason);
-  void Comment(const char* format, ...);
+  void FPRINTF_CHECKING Comment(const char* format, ...);
 
   void AddDeferredCode(LDeferredCode* code) { deferred_.Add(code, zone()); }
 
@@ -261,6 +277,7 @@ class LCodeGen BASE_EMBEDDED {
   // Generate a direct call to a known function.  Expects the function
   // to be in r1.
   void CallKnownFunction(Handle<JSFunction> function,
+                         int formal_parameter_count,
                          int arity,
                          LInstruction* instr,
                          CallKind call_kind,
@@ -291,17 +308,7 @@ class LCodeGen BASE_EMBEDDED {
   Register ToRegister(int index) const;
   DwVfpRegister ToDoubleRegister(int index) const;
 
-  // Specific math operations - used from DoUnaryMathOperation.
-  void EmitIntegerMathAbs(LUnaryMathOperation* instr);
-  void DoMathAbs(LUnaryMathOperation* instr);
-  void DoMathFloor(LUnaryMathOperation* instr);
-  void DoMathRound(LUnaryMathOperation* instr);
-  void DoMathSqrt(LUnaryMathOperation* instr);
-  void DoMathPowHalf(LUnaryMathOperation* instr);
-  void DoMathLog(LUnaryMathOperation* instr);
-  void DoMathTan(LUnaryMathOperation* instr);
-  void DoMathCos(LUnaryMathOperation* instr);
-  void DoMathSin(LUnaryMathOperation* instr);
+  void EmitIntegerMathAbs(LMathAbs* instr);
 
   // Support for recording safepoint and position information.
   void RecordSafepoint(LPointerMap* pointers,
@@ -412,6 +419,7 @@ class LCodeGen BASE_EMBEDDED {
   ZoneList<JumpTableEntry> deopt_jump_table_;
   ZoneList<Handle<Object> > deoptimization_literals_;
   ZoneList<Handle<Map> > prototype_maps_;
+  ZoneList<Handle<Map> > transition_maps_;
   int inlined_function_count_;
   Scope* const scope_;
   Status status_;

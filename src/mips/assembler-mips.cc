@@ -47,7 +47,7 @@ namespace internal {
 bool CpuFeatures::initialized_ = false;
 #endif
 unsigned CpuFeatures::supported_ = 0;
-unsigned CpuFeatures::found_by_runtime_probing_ = 0;
+unsigned CpuFeatures::found_by_runtime_probing_only_ = 0;
 
 
 ExternalReference ExternalReference::cpu_features() {
@@ -63,7 +63,7 @@ ExternalReference ExternalReference::cpu_features() {
 static uint64_t CpuFeaturesImpliedByCompiler() {
   uint64_t answer = 0;
 #ifdef CAN_USE_FPU_INSTRUCTIONS
-  answer |= 1u << FPU;
+  answer |= static_cast<uint64_t>(1) << FPU;
 #endif  // def CAN_USE_FPU_INSTRUCTIONS
 
 #ifdef __mips__
@@ -71,7 +71,7 @@ static uint64_t CpuFeaturesImpliedByCompiler() {
   // generation even when generating snapshots.  This won't work for cross
   // compilation.
 #if(defined(__mips_hard_float) && __mips_hard_float != 0)
-  answer |= 1u << FPU;
+  answer |= static_cast<uint64_t>(1) << FPU;
 #endif  // defined(__mips_hard_float) && __mips_hard_float != 0
 #endif  // def __mips__
 
@@ -80,29 +80,24 @@ static uint64_t CpuFeaturesImpliedByCompiler() {
 
 
 const char* DoubleRegister::AllocationIndexToString(int index) {
-  if (CpuFeatures::IsSupported(FPU)) {
-    ASSERT(index >= 0 && index < kMaxNumAllocatableRegisters);
-    const char* const names[] = {
-      "f0",
-      "f2",
-      "f4",
-      "f6",
-      "f8",
-      "f10",
-      "f12",
-      "f14",
-      "f16",
-      "f18",
-      "f20",
-      "f22",
-      "f24",
-      "f26"
-    };
-    return names[index];
-  } else {
-    ASSERT(index == 0);
-    return "sfpd0";
-  }
+  ASSERT(index >= 0 && index < kMaxNumAllocatableRegisters);
+  const char* const names[] = {
+    "f0",
+    "f2",
+    "f4",
+    "f6",
+    "f8",
+    "f10",
+    "f12",
+    "f14",
+    "f16",
+    "f18",
+    "f20",
+    "f22",
+    "f24",
+    "f26"
+  };
+  return names[index];
 }
 
 
@@ -127,17 +122,15 @@ void CpuFeatures::Probe() {
   // If the compiler is allowed to use fpu then we can use fpu too in our
   // code generation.
 #if !defined(__mips__)
-  // For the simulator=mips build, use FPU when FLAG_enable_fpu is enabled.
-  if (FLAG_enable_fpu) {
-      supported_ |= 1u << FPU;
-  }
+  // For the simulator build, use FPU.
+  supported_ |= static_cast<uint64_t>(1) << FPU;
 #else
   // Probe for additional features not already known to be available.
   if (OS::MipsCpuHasFeature(FPU)) {
     // This implementation also sets the FPU flags if
     // runtime detection of FPU returns true.
-    supported_ |= 1u << FPU;
-    found_by_runtime_probing_ |= 1u << FPU;
+    supported_ |= static_cast<uint64_t>(1) << FPU;
+    found_by_runtime_probing_only_ |= static_cast<uint64_t>(1) << FPU;
   }
 #endif
 }
@@ -244,10 +237,14 @@ void RelocInfo::PatchCodeWithCall(Address target, int guard_bytes) {
 // See assembler-mips-inl.h for inlined constructors.
 
 Operand::Operand(Handle<Object> handle) {
+#ifdef DEBUG
+  Isolate* isolate = Isolate::Current();
+#endif
+  ALLOW_HANDLE_DEREF(isolate, "using and embedding raw address");
   rm_ = no_reg;
   // Verify all Objects referred by code are NOT in new space.
   Object* obj = *handle;
-  ASSERT(!HEAP->InNewSpace(obj));
+  ASSERT(!isolate->heap()->InNewSpace(obj));
   if (obj->IsHeapObject()) {
     imm32_ = reinterpret_cast<intptr_t>(handle.location());
     rmode_ = RelocInfo::EMBEDDED_OBJECT;
@@ -490,7 +487,6 @@ bool Assembler::IsBranch(Instr instr) {
   uint32_t opcode   = GetOpcodeField(instr);
   uint32_t rt_field = GetRtField(instr);
   uint32_t rs_field = GetRsField(instr);
-  uint32_t label_constant = GetLabelConst(instr);
   // Checks if the instruction is a branch.
   return opcode == BEQ ||
       opcode == BNE ||
@@ -502,10 +498,13 @@ bool Assembler::IsBranch(Instr instr) {
       opcode == BGTZL ||
       (opcode == REGIMM && (rt_field == BLTZ || rt_field == BGEZ ||
                             rt_field == BLTZAL || rt_field == BGEZAL)) ||
-      (opcode == COP1 && rs_field == BC1) ||  // Coprocessor branch.
-      label_constant == 0;  // Emitted label const in reg-exp engine.
+      (opcode == COP1 && rs_field == BC1);  // Coprocessor branch.
 }
 
+bool Assembler::IsEmittedConstant(Instr instr) {
+  uint32_t label_constant = GetLabelConst(instr);
+  return label_constant == 0;  // Emitted label const in reg-exp engine.
+}
 
 bool Assembler::IsBeq(Instr instr) {
   return GetOpcodeField(instr) == BEQ;
@@ -796,7 +795,7 @@ void Assembler::bind_to(Label* L, int pos) {
       }
       target_at_put(fixup_pos, pos);
     } else {
-      ASSERT(IsJ(instr) || IsLui(instr));
+      ASSERT(IsJ(instr) || IsLui(instr) || IsEmittedConstant(instr));
       target_at_put(fixup_pos, pos);
     }
   }
@@ -874,7 +873,6 @@ void Assembler::GenInstrRegister(Opcode opcode,
                                  FPURegister fd,
                                  SecondaryField func) {
   ASSERT(fd.is_valid() && fs.is_valid() && ft.is_valid());
-  ASSERT(CpuFeatures::IsEnabled(FPU));
   Instr instr = opcode | fmt | (ft.code() << kFtShift) | (fs.code() << kFsShift)
       | (fd.code() << kFdShift) | func;
   emit(instr);
@@ -888,7 +886,6 @@ void Assembler::GenInstrRegister(Opcode opcode,
                                  FPURegister fd,
                                  SecondaryField func) {
   ASSERT(fd.is_valid() && fr.is_valid() && fs.is_valid() && ft.is_valid());
-  ASSERT(CpuFeatures::IsEnabled(FPU));
   Instr instr = opcode | (fr.code() << kFrShift) | (ft.code() << kFtShift)
       | (fs.code() << kFsShift) | (fd.code() << kFdShift) | func;
   emit(instr);
@@ -902,7 +899,6 @@ void Assembler::GenInstrRegister(Opcode opcode,
                                  FPURegister fd,
                                  SecondaryField func) {
   ASSERT(fd.is_valid() && fs.is_valid() && rt.is_valid());
-  ASSERT(CpuFeatures::IsEnabled(FPU));
   Instr instr = opcode | fmt | (rt.code() << kRtShift)
       | (fs.code() << kFsShift) | (fd.code() << kFdShift) | func;
   emit(instr);
@@ -915,7 +911,6 @@ void Assembler::GenInstrRegister(Opcode opcode,
                                  FPUControlRegister fs,
                                  SecondaryField func) {
   ASSERT(fs.is_valid() && rt.is_valid());
-  ASSERT(CpuFeatures::IsEnabled(FPU));
   Instr instr =
       opcode | fmt | (rt.code() << kRtShift) | (fs.code() << kFsShift) | func;
   emit(instr);
@@ -950,7 +945,6 @@ void Assembler::GenInstrImmediate(Opcode opcode,
                                   FPURegister ft,
                                   int32_t j) {
   ASSERT(rs.is_valid() && ft.is_valid() && (is_int16(j) || is_uint16(j)));
-  ASSERT(CpuFeatures::IsEnabled(FPU));
   Instr instr = opcode | (rs.code() << kRsShift) | (ft.code() << kFtShift)
       | (j & kImm16Mask);
   emit(instr);
@@ -1677,7 +1671,7 @@ void Assembler::cfc1(Register rt, FPUControlRegister fs) {
 
 void Assembler::DoubleAsTwoUInt32(double d, uint32_t* lo, uint32_t* hi) {
   uint64_t i;
-  memcpy(&i, &d, 8);
+  OS::MemCopy(&i, &d, 8);
 
   *lo = i & 0xffffffff;
   *hi = i >> 32;
@@ -1872,7 +1866,6 @@ void Assembler::cvt_d_s(FPURegister fd, FPURegister fs) {
 // Conditions.
 void Assembler::c(FPUCondition cond, SecondaryField fmt,
     FPURegister fs, FPURegister ft, uint16_t cc) {
-  ASSERT(CpuFeatures::IsEnabled(FPU));
   ASSERT(is_uint3(cc));
   ASSERT((fmt & ~(31 << kRsShift)) == 0);
   Instr instr = COP1 | fmt | ft.code() << 16 | fs.code() << kFsShift
@@ -1883,7 +1876,6 @@ void Assembler::c(FPUCondition cond, SecondaryField fmt,
 
 void Assembler::fcmp(FPURegister src1, const double src2,
       FPUCondition cond) {
-  ASSERT(CpuFeatures::IsEnabled(FPU));
   ASSERT(src2 == 0.0);
   mtc1(zero_reg, f14);
   cvt_d_w(f14, f14);
@@ -1892,7 +1884,6 @@ void Assembler::fcmp(FPURegister src1, const double src2,
 
 
 void Assembler::bc1f(int16_t offset, uint16_t cc) {
-  ASSERT(CpuFeatures::IsEnabled(FPU));
   ASSERT(is_uint3(cc));
   Instr instr = COP1 | BC1 | cc << 18 | 0 << 16 | (offset & kImm16Mask);
   emit(instr);
@@ -1900,7 +1891,6 @@ void Assembler::bc1f(int16_t offset, uint16_t cc) {
 
 
 void Assembler::bc1t(int16_t offset, uint16_t cc) {
-  ASSERT(CpuFeatures::IsEnabled(FPU));
   ASSERT(is_uint3(cc));
   Instr instr = COP1 | BC1 | cc << 18 | 1 << 16 | (offset & kImm16Mask);
   emit(instr);
@@ -1995,9 +1985,9 @@ void Assembler::GrowBuffer() {
   // Copy the data.
   int pc_delta = desc.buffer - buffer_;
   int rc_delta = (desc.buffer + desc.buffer_size) - (buffer_ + buffer_size_);
-  memmove(desc.buffer, buffer_, desc.instr_size);
-  memmove(reloc_info_writer.pos() + rc_delta,
-          reloc_info_writer.pos(), desc.reloc_size);
+  OS::MemMove(desc.buffer, buffer_, desc.instr_size);
+  OS::MemMove(reloc_info_writer.pos() + rc_delta,
+              reloc_info_writer.pos(), desc.reloc_size);
 
   // Switch buffers.
   DeleteArray(buffer_);

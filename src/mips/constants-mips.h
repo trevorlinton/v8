@@ -61,8 +61,9 @@ enum ArchVariants {
 // -mhard-float is passed to the compiler.
 const bool IsMipsSoftFloatABI = false;
 #elif(defined(__mips_soft_float) && __mips_soft_float != 0)
-// Not using floating-point coprocessor instructions. This flag is raised when
-// -msoft-float is passed to the compiler.
+// This flag is raised when -msoft-float is passed to the compiler.
+// Although FPU is a base requirement for v8, soft-float ABI is used
+// on soft-float systems with FPU kernel emulation.
 const bool IsMipsSoftFloatABI = true;
 #else
 const bool IsMipsSoftFloatABI = true;
@@ -429,7 +430,9 @@ enum SecondaryField {
 
 // ----- Emulated conditions.
 // On MIPS we use this enum to abstract from conditionnal branch instructions.
-// the 'U' prefix is used to specify unsigned comparisons.
+// The 'U' prefix is used to specify unsigned comparisons.
+// Oppposite conditions must be paired as odd/even numbers
+// because 'NegateCondition' function flips LSB to negate condition.
 enum Condition {
   // Any value < 0 is considered no_condition.
   kNoCondition  = -1,
@@ -450,8 +453,10 @@ enum Condition {
   greater_equal = 13,
   less_equal    = 14,
   greater       = 15,
+  ueq           = 16,  // Unordered or Equal.
+  nue           = 17,  // Not (Unordered or Equal).
 
-  cc_always     = 16,
+  cc_always     = 18,
 
   // Aliases.
   carry         = Uless,

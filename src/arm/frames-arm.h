@@ -100,18 +100,6 @@ const int kNumSafepointSavedRegisters = kNumJSCallerSaved + kNumCalleeSaved;
 // ----------------------------------------------------
 
 
-class StackHandlerConstants : public AllStatic {
- public:
-  static const int kNextOffset     = 0 * kPointerSize;
-  static const int kCodeOffset     = 1 * kPointerSize;
-  static const int kStateOffset    = 2 * kPointerSize;
-  static const int kContextOffset  = 3 * kPointerSize;
-  static const int kFPOffset       = 4 * kPointerSize;
-
-  static const int kSize = kFPOffset + kPointerSize;
-};
-
-
 class EntryFrameConstants : public AllStatic {
  public:
   static const int kCallerFPOffset      = -3 * kPointerSize;
@@ -149,14 +137,30 @@ class JavaScriptFrameConstants : public AllStatic {
 
 class ArgumentsAdaptorFrameConstants : public AllStatic {
  public:
+  // FP-relative.
   static const int kLengthOffset = StandardFrameConstants::kExpressionsOffset;
+
   static const int kFrameSize =
       StandardFrameConstants::kFixedFrameSize + kPointerSize;
 };
 
 
+class ConstructFrameConstants : public AllStatic {
+ public:
+  // FP-relative.
+  static const int kImplicitReceiverOffset = -6 * kPointerSize;
+  static const int kConstructorOffset      = -5 * kPointerSize;
+  static const int kLengthOffset           = -4 * kPointerSize;
+  static const int kCodeOffset = StandardFrameConstants::kExpressionsOffset;
+
+  static const int kFrameSize =
+      StandardFrameConstants::kFixedFrameSize + 4 * kPointerSize;
+};
+
+
 class InternalFrameConstants : public AllStatic {
  public:
+  // FP-relative.
   static const int kCodeOffset = StandardFrameConstants::kExpressionsOffset;
 };
 

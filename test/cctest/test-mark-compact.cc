@@ -43,17 +43,9 @@
 
 using namespace v8::internal;
 
-static v8::Persistent<v8::Context> env;
-
-static void InitializeVM() {
-  if (env.IsEmpty()) env = v8::Context::New();
-  v8::HandleScope scope;
-  env->Enter();
-}
-
 
 TEST(MarkingDeque) {
-  InitializeVM();
+  CcTest::InitializeVM();
   int mem_size = 20 * kPointerSize;
   byte* mem = NewArray<byte>(20*kPointerSize);
   Address low = reinterpret_cast<Address>(mem);
@@ -90,9 +82,9 @@ TEST(Promotion) {
   FLAG_always_compact = true;
   HEAP->ConfigureHeap(2*256*KB, 8*MB, 8*MB);
 
-  InitializeVM();
+  CcTest::InitializeVM();
 
-  v8::HandleScope sc;
+  v8::HandleScope sc(CcTest::isolate());
 
   // Allocate a fixed array in the new space.
   int array_size =
@@ -118,9 +110,9 @@ TEST(NoPromotion) {
 
   // Test the situation that some objects in new space are promoted to
   // the old space
-  InitializeVM();
+  CcTest::InitializeVM();
 
-  v8::HandleScope sc;
+  v8::HandleScope sc(CcTest::isolate());
 
   // Do a mark compact GC to shrink the heap.
   HEAP->CollectGarbage(OLD_POINTER_SPACE);
@@ -156,9 +148,9 @@ TEST(NoPromotion) {
 
 
 TEST(MarkCompactCollector) {
-  InitializeVM();
+  CcTest::InitializeVM();
 
-  v8::HandleScope sc;
+  v8::HandleScope sc(CcTest::isolate());
   // call mark-compact when heap is empty
   HEAP->CollectGarbage(OLD_POINTER_SPACE);
 
@@ -184,8 +176,8 @@ TEST(MarkCompactCollector) {
                            JSObject::kHeaderSize)->ToObjectChecked();
 
   // allocate a garbage
-  String* func_name =
-      String::cast(HEAP->LookupUtf8Symbol("theFunction")->ToObjectChecked());
+  String* func_name = String::cast(
+      HEAP->InternalizeUtf8String("theFunction")->ToObjectChecked());
   SharedFunctionInfo* function_share = SharedFunctionInfo::cast(
       HEAP->AllocateSharedFunctionInfo(func_name)->ToObjectChecked());
   JSFunction* function = JSFunction::cast(
@@ -203,8 +195,8 @@ TEST(MarkCompactCollector) {
       HEAP->AllocateJSObject(function)->ToObjectChecked());
   HEAP->CollectGarbage(OLD_POINTER_SPACE);
 
-  func_name =
-      String::cast(HEAP->LookupUtf8Symbol("theFunction")->ToObjectChecked());
+  func_name = String::cast(
+      HEAP->InternalizeUtf8String("theFunction")->ToObjectChecked());
   CHECK(Isolate::Current()->context()->global_object()->
         HasLocalProperty(func_name));
   Object* func_value = Isolate::Current()->context()->global_object()->
@@ -214,11 +206,11 @@ TEST(MarkCompactCollector) {
 
   obj = JSObject::cast(HEAP->AllocateJSObject(function)->ToObjectChecked());
   String* obj_name =
-      String::cast(HEAP->LookupUtf8Symbol("theObject")->ToObjectChecked());
+      String::cast(HEAP->InternalizeUtf8String("theObject")->ToObjectChecked());
   Isolate::Current()->context()->global_object()->SetProperty(
       obj_name, obj, NONE, kNonStrictMode)->ToObjectChecked();
   String* prop_name =
-      String::cast(HEAP->LookupUtf8Symbol("theSlot")->ToObjectChecked());
+      String::cast(HEAP->InternalizeUtf8String("theSlot")->ToObjectChecked());
   obj->SetProperty(prop_name,
                    Smi::FromInt(23),
                    NONE,
@@ -227,7 +219,7 @@ TEST(MarkCompactCollector) {
   HEAP->CollectGarbage(OLD_POINTER_SPACE);
 
   obj_name =
-      String::cast(HEAP->LookupUtf8Symbol("theObject")->ToObjectChecked());
+      String::cast(HEAP->InternalizeUtf8String("theObject")->ToObjectChecked());
   CHECK(Isolate::Current()->context()->global_object()->
         HasLocalProperty(obj_name));
   CHECK(Isolate::Current()->context()->global_object()->
@@ -235,7 +227,7 @@ TEST(MarkCompactCollector) {
   obj = JSObject::cast(Isolate::Current()->context()->global_object()->
                        GetProperty(obj_name)->ToObjectChecked());
   prop_name =
-      String::cast(HEAP->LookupUtf8Symbol("theSlot")->ToObjectChecked());
+      String::cast(HEAP->InternalizeUtf8String("theSlot")->ToObjectChecked());
   CHECK(obj->GetProperty(prop_name) == Smi::FromInt(23));
 }
 
@@ -249,7 +241,7 @@ static Handle<Map> CreateMap() {
 
 TEST(MapCompact) {
   FLAG_max_map_space_pages = 16;
-  InitializeVM();
+  CcTest::InitializeVM();
 
   {
     v8::HandleScope sc;
@@ -288,7 +280,7 @@ static void GCEpilogueCallbackFunc() {
 
 
 TEST(GCCallback) {
-  InitializeVM();
+  CcTest::InitializeVM();
 
   HEAP->SetGlobalGCPrologueCallback(&GCPrologueCallbackFunc);
   HEAP->SetGlobalGCEpilogueCallback(&GCEpilogueCallbackFunc);
@@ -316,11 +308,11 @@ static void WeakPointerCallback(v8::Isolate* isolate,
 
 TEST(ObjectGroups) {
   FLAG_incremental_marking = false;
-  InitializeVM();
+  CcTest::InitializeVM();
   GlobalHandles* global_handles = Isolate::Current()->global_handles();
 
   NumberOfWeakCalls = 0;
-  v8::HandleScope handle_scope;
+  v8::HandleScope handle_scope(CcTest::isolate());
 
   Handle<Object> g1s1 =
       global_handles->Create(HEAP->AllocateFixedArray(1)->ToObjectChecked());
@@ -376,7 +368,7 @@ TEST(ObjectGroups) {
         Handle<HeapObject>::cast(g1s1).location(), g1_children, 1);
     global_handles->AddObjectGroup(g2_objects, 2, NULL);
     global_handles->AddImplicitReferences(
-        Handle<HeapObject>::cast(g2s2).location(), g2_children, 1);
+        Handle<HeapObject>::cast(g2s1).location(), g2_children, 1);
   }
   // Do a full GC
   HEAP->CollectGarbage(OLD_POINTER_SPACE);
@@ -405,7 +397,7 @@ TEST(ObjectGroups) {
         Handle<HeapObject>::cast(g1s1).location(), g1_children, 1);
     global_handles->AddObjectGroup(g2_objects, 2, NULL);
     global_handles->AddImplicitReferences(
-        Handle<HeapObject>::cast(g2s2).location(), g2_children, 1);
+        Handle<HeapObject>::cast(g2s1).location(), g2_children, 1);
   }
 
   HEAP->CollectGarbage(OLD_POINTER_SPACE);
@@ -453,10 +445,10 @@ class TestRetainedObjectInfo : public v8::RetainedObjectInfo {
 
 
 TEST(EmptyObjectGroups) {
-  InitializeVM();
+  CcTest::InitializeVM();
   GlobalHandles* global_handles = Isolate::Current()->global_handles();
 
-  v8::HandleScope handle_scope;
+  v8::HandleScope handle_scope(CcTest::isolate());
 
   Handle<Object> object =
       global_handles->Create(HEAP->AllocateFixedArray(1)->ToObjectChecked());
@@ -553,7 +545,7 @@ TEST(BootUpMemoryUse) {
   // Only Linux has the proc filesystem and only if it is mapped.  If it's not
   // there we just skip the test.
   if (initial_memory >= 0) {
-    InitializeVM();
+    CcTest::InitializeVM();
     intptr_t delta = MemoryInUse() - initial_memory;
     printf("delta: %" V8_PTR_PREFIX "d kB\n", delta / 1024);
     if (sizeof(initial_memory) == 8) {  // 64-bit.
