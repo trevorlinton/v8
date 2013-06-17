@@ -81,29 +81,17 @@ bool Operand::is_reg() const {
 
 
 int Register::NumAllocatableRegisters() {
-  if (CpuFeatures::IsSupported(FPU)) {
     return kMaxNumAllocatableRegisters;
-  } else {
-    return kMaxNumAllocatableRegisters - kGPRsPerNonFPUDouble;
-  }
 }
 
 
 int DoubleRegister::NumRegisters() {
-  if (CpuFeatures::IsSupported(FPU)) {
     return FPURegister::kMaxNumRegisters;
-  } else {
-    return 1;
-  }
 }
 
 
 int DoubleRegister::NumAllocatableRegisters() {
-  if (CpuFeatures::IsSupported(FPU)) {
     return FPURegister::kMaxNumAllocatableRegisters;
-  } else {
-    return 1;
-  }
 }
 
 
@@ -139,14 +127,14 @@ void RelocInfo::apply(intptr_t delta) {
 
 
 Address RelocInfo::target_address() {
-  ASSERT(IsCodeTarget(rmode_) || rmode_ == RUNTIME_ENTRY);
+  ASSERT(IsCodeTarget(rmode_) || IsRuntimeEntry(rmode_));
   return Assembler::target_address_at(pc_);
 }
 
 
 Address RelocInfo::target_address_address() {
   ASSERT(IsCodeTarget(rmode_) ||
-         rmode_ == RUNTIME_ENTRY ||
+         IsRuntimeEntry(rmode_) ||
          rmode_ == EMBEDDED_OBJECT ||
          rmode_ == EXTERNAL_REFERENCE);
   // Read the address of the word containing the target_address in an
@@ -174,7 +162,7 @@ int RelocInfo::target_address_size() {
 
 
 void RelocInfo::set_target_address(Address target, WriteBarrierMode mode) {
-  ASSERT(IsCodeTarget(rmode_) || rmode_ == RUNTIME_ENTRY);
+  ASSERT(IsCodeTarget(rmode_) || IsRuntimeEntry(rmode_));
   Assembler::set_target_address_at(pc_, target);
   if (mode == UPDATE_WRITE_BARRIER && host() != NULL && IsCodeTarget(rmode_)) {
     Object* target_code = Code::GetCodeFromTargetAddress(target);
@@ -228,6 +216,19 @@ Address* RelocInfo::target_reference_address() {
   ASSERT(rmode_ == EXTERNAL_REFERENCE);
   reconstructed_adr_ptr_ = Assembler::target_address_at(pc_);
   return &reconstructed_adr_ptr_;
+}
+
+
+Address RelocInfo::target_runtime_entry(Assembler* origin) {
+  ASSERT(IsRuntimeEntry(rmode_));
+  return target_address();
+}
+
+
+void RelocInfo::set_target_runtime_entry(Address target,
+                                         WriteBarrierMode mode) {
+  ASSERT(IsRuntimeEntry(rmode_));
+  if (target_address() != target) set_target_address(target, mode);
 }
 
 
@@ -359,7 +360,7 @@ void RelocInfo::Visit(ObjectVisitor* visitor) {
              Isolate::Current()->debug()->has_break_points()) {
     visitor->VisitDebugTarget(this);
 #endif
-  } else if (mode == RelocInfo::RUNTIME_ENTRY) {
+  } else if (RelocInfo::IsRuntimeEntry(mode)) {
     visitor->VisitRuntimeEntry(this);
   }
 }
@@ -386,7 +387,7 @@ void RelocInfo::Visit(Heap* heap) {
               IsPatchedDebugBreakSlotSequence()))) {
     StaticVisitor::VisitDebugTarget(heap, this);
 #endif
-  } else if (mode == RelocInfo::RUNTIME_ENTRY) {
+  } else if (RelocInfo::IsRuntimeEntry(mode)) {
     StaticVisitor::VisitRuntimeEntry(this);
   }
 }

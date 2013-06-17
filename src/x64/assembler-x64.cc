@@ -43,7 +43,7 @@ namespace internal {
 bool CpuFeatures::initialized_ = false;
 #endif
 uint64_t CpuFeatures::supported_ = CpuFeatures::kDefaultCpuFeatures;
-uint64_t CpuFeatures::found_by_runtime_probing_ = 0;
+uint64_t CpuFeatures::found_by_runtime_probing_only_ = 0;
 
 
 ExternalReference ExternalReference::cpu_features() {
@@ -108,7 +108,7 @@ void CpuFeatures::Probe() {
   __ bind(&cpuid);
   __ movl(rax, Immediate(1));
   supported_ = kDefaultCpuFeatures | (1 << CPUID);
-  { Scope fscope(CPUID);
+  { CpuFeatureScope fscope(&assm, CPUID);
     __ cpuid();
     // Move the result from ecx:edx to rdi.
     __ movl(rdi, rdx);  // Zero-extended to 64 bits.
@@ -143,15 +143,15 @@ void CpuFeatures::Probe() {
 
   typedef uint64_t (*F0)();
   F0 probe = FUNCTION_CAST<F0>(reinterpret_cast<Address>(memory->address()));
-  supported_ = probe();
-  found_by_runtime_probing_ = supported_;
-  found_by_runtime_probing_ &= ~kDefaultCpuFeatures;
-  uint64_t os_guarantees = OS::CpuFeaturesImpliedByPlatform();
-  supported_ |= os_guarantees;
-  found_by_runtime_probing_ &= ~os_guarantees;
-  // SSE2 and CMOV must be available on an X64 CPU.
+
+  uint64_t probed_features = probe();
+  uint64_t platform_features = OS::CpuFeaturesImpliedByPlatform();
+  supported_ = probed_features | platform_features;
+  found_by_runtime_probing_only_
+      = probed_features & ~kDefaultCpuFeatures & ~platform_features;
+
+  // CMOV must be available on an X64 CPU.
   ASSERT(IsSupported(CPUID));
-  ASSERT(IsSupported(SSE2));
   ASSERT(IsSupported(CMOV));
 
   delete memory;
@@ -485,9 +485,9 @@ void Assembler::GrowBuffer() {
   intptr_t pc_delta = desc.buffer - buffer_;
   intptr_t rc_delta = (desc.buffer + desc.buffer_size) -
       (buffer_ + buffer_size_);
-  memmove(desc.buffer, buffer_, desc.instr_size);
-  memmove(rc_delta + reloc_info_writer.pos(),
-          reloc_info_writer.pos(), desc.reloc_size);
+  OS::MemMove(desc.buffer, buffer_, desc.instr_size);
+  OS::MemMove(rc_delta + reloc_info_writer.pos(),
+              reloc_info_writer.pos(), desc.reloc_size);
 
   // Switch buffers.
   if (isolate() != NULL &&
@@ -840,6 +840,16 @@ void Assembler::call(Label* L) {
 }
 
 
+void Assembler::call(Address entry, RelocInfo::Mode rmode) {
+  ASSERT(RelocInfo::IsRuntimeEntry(rmode));
+  positions_recorder()->WriteRecordedPositions();
+  EnsureSpace ensure_space(this);
+  // 1110 1000 #32-bit disp.
+  emit(0xE8);
+  emit_runtime_entry(entry, rmode);
+}
+
+
 void Assembler::call(Handle<Code> target,
                      RelocInfo::Mode rmode,
                      TypeFeedbackId ast_id) {
@@ -978,7 +988,7 @@ void Assembler::cmpb_al(Immediate imm8) {
 
 
 void Assembler::cpuid() {
-  ASSERT(CpuFeatures::IsEnabled(CPUID));
+  ASSERT(IsEnabled(CPUID));
   EnsureSpace ensure_space(this);
   emit(0x0F);
   emit(0xA2);
@@ -1246,6 +1256,16 @@ void Assembler::j(Condition cc, Label* L, Label::Distance distance) {
 }
 
 
+void Assembler::j(Condition cc, Address entry, RelocInfo::Mode rmode) {
+  ASSERT(RelocInfo::IsRuntimeEntry(rmode));
+  EnsureSpace ensure_space(this);
+  ASSERT(is_uint4(cc));
+  emit(0x0F);
+  emit(0x80 | cc);
+  emit_runtime_entry(entry, rmode);
+}
+
+
 void Assembler::j(Condition cc,
                   Handle<Code> target,
                   RelocInfo::Mode rmode) {
@@ -1305,6 +1325,15 @@ void Assembler::jmp(Handle<Code> target, RelocInfo::Mode rmode) {
   // 1110 1001 #32-bit disp.
   emit(0xE9);
   emit_code_target(target, rmode);
+}
+
+
+void Assembler::jmp(Address entry, RelocInfo::Mode rmode) {
+  ASSERT(RelocInfo::IsRuntimeEntry(rmode));
+  EnsureSpace ensure_space(this);
+  ASSERT(RelocInfo::IsRuntimeEntry(rmode));
+  emit(0xE9);
+  emit_runtime_entry(entry, rmode);
 }
 
 
@@ -1561,6 +1590,7 @@ void Assembler::movl(const Operand& dst, Label* src) {
 
 
 void Assembler::movq(Register dst, Handle<Object> value, RelocInfo::Mode mode) {
+  ALLOW_HANDLE_DEREF(isolate(), "using and embedding raw address");
   // If there is no relocation info, emit the value of the handle efficiently
   // (possibly using less that 8 bytes for the value).
   if (RelocInfo::IsNone(mode)) {
@@ -2218,7 +2248,7 @@ void Assembler::fistp_s(const Operand& adr) {
 
 
 void Assembler::fisttp_s(const Operand& adr) {
-  ASSERT(CpuFeatures::IsEnabled(SSE3));
+  ASSERT(IsEnabled(SSE3));
   EnsureSpace ensure_space(this);
   emit_optional_rex_32(adr);
   emit(0xDB);
@@ -2227,7 +2257,7 @@ void Assembler::fisttp_s(const Operand& adr) {
 
 
 void Assembler::fisttp_d(const Operand& adr) {
-  ASSERT(CpuFeatures::IsEnabled(SSE3));
+  ASSERT(IsEnabled(SSE3));
   EnsureSpace ensure_space(this);
   emit_optional_rex_32(adr);
   emit(0xDD);
@@ -2565,6 +2595,26 @@ void Assembler::movdqa(const Operand& dst, XMMRegister src) {
 void Assembler::movdqa(XMMRegister dst, const Operand& src) {
   EnsureSpace ensure_space(this);
   emit(0x66);
+  emit_rex_64(dst, src);
+  emit(0x0F);
+  emit(0x6F);
+  emit_sse_operand(dst, src);
+}
+
+
+void Assembler::movdqu(const Operand& dst, XMMRegister src) {
+  EnsureSpace ensure_space(this);
+  emit(0xF3);
+  emit_rex_64(src, dst);
+  emit(0x0F);
+  emit(0x7F);
+  emit_sse_operand(src, dst);
+}
+
+
+void Assembler::movdqu(XMMRegister dst, const Operand& src) {
+  EnsureSpace ensure_space(this);
+  emit(0xF3);
   emit_rex_64(dst, src);
   emit(0x0F);
   emit(0x6F);
@@ -2943,7 +2993,7 @@ void Assembler::ucomisd(XMMRegister dst, const Operand& src) {
 
 void Assembler::roundsd(XMMRegister dst, XMMRegister src,
                         Assembler::RoundingMode mode) {
-  ASSERT(CpuFeatures::IsEnabled(SSE4_1));
+  ASSERT(IsEnabled(SSE4_1));
   EnsureSpace ensure_space(this);
   emit(0x66);
   emit_optional_rex_32(dst, src);
@@ -3048,6 +3098,7 @@ void Assembler::RecordComment(const char* msg, bool force) {
 
 
 const int RelocInfo::kApplyMask = RelocInfo::kCodeTargetMask |
+    1 << RelocInfo::RUNTIME_ENTRY |
     1 << RelocInfo::INTERNAL_REFERENCE |
     1 << RelocInfo::CODE_AGE_SEQUENCE;
 

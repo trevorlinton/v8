@@ -35,6 +35,9 @@ namespace v8 {
 namespace internal {
 
 
+void ArrayNativeCode(MacroAssembler* masm, Label* call_generic_code);
+
+
 // Compute a transcendental math function natively, or call the
 // TranscendentalCache runtime function.
 class TranscendentalCacheStub: public PlatformCodeStub {
@@ -62,11 +65,11 @@ class TranscendentalCacheStub: public PlatformCodeStub {
 class StoreBufferOverflowStub: public PlatformCodeStub {
  public:
   explicit StoreBufferOverflowStub(SaveFPRegsMode save_fp)
-      : save_doubles_(save_fp) { }
+      : save_doubles_(save_fp) {}
 
   void Generate(MacroAssembler* masm);
 
-  virtual bool IsPregenerated();
+  virtual bool IsPregenerated() { return true; }
   static void GenerateFixedRegStubsAheadOfTime(Isolate* isolate);
   virtual bool SometimesSetsUpAFrame() { return false; }
 
@@ -131,7 +134,7 @@ class UnaryOpStub: public PlatformCodeStub {
   void GenerateGenericStubBitNot(MacroAssembler* masm);
   void GenerateGenericCodeFallback(MacroAssembler* masm);
 
-  virtual int GetCodeKind() { return Code::UNARY_OP_IC; }
+  virtual Code::Kind GetCodeKind() const { return Code::UNARY_OP_IC; }
 
   virtual InlineCacheState GetICState() {
     return UnaryOpIC::ToState(operand_type_);
@@ -173,14 +176,14 @@ class StringHelper : public AllStatic {
                                          int flags);
 
 
-  // Probe the symbol table for a two character string. If the string is
+  // Probe the string table for a two character string. If the string is
   // not found by probing a jump to the label not_found is performed. This jump
-  // does not guarantee that the string is not in the symbol table. If the
+  // does not guarantee that the string is not in the string table. If the
   // string is found the code falls through with the string in register r0.
   // Contents of both c1 and c2 registers are modified. At the exit c1 is
   // guaranteed to contain halfword with low and high bytes equal to
   // initial contents of c1 and c2 respectively.
-  static void GenerateTwoCharacterSymbolTableProbe(MacroAssembler* masm,
+  static void GenerateTwoCharacterStringTableProbe(MacroAssembler* masm,
                                                    Register c1,
                                                    Register c2,
                                                    Register scratch1,
@@ -484,7 +487,6 @@ class RecordWriteStub: public PlatformCodeStub {
     void SaveCallerSaveRegisters(MacroAssembler* masm, SaveFPRegsMode mode) {
       masm->MultiPush((kJSCallerSaved | ra.bit()) & ~scratch1_.bit());
       if (mode == kSaveFPRegs) {
-        CpuFeatures::Scope scope(FPU);
         masm->MultiPushFPU(kCallerSavedFPU);
       }
     }
@@ -492,7 +494,6 @@ class RecordWriteStub: public PlatformCodeStub {
     inline void RestoreCallerSaveRegisters(MacroAssembler*masm,
                                            SaveFPRegsMode mode) {
       if (mode == kSaveFPRegs) {
-        CpuFeatures::Scope scope(FPU);
         masm->MultiPopFPU(kCallerSavedFPU);
       }
       masm->MultiPop((kJSCallerSaved | ra.bit()) & ~scratch1_.bit());
@@ -683,27 +684,6 @@ class FloatingPointHelper : public AllStatic {
                                 FPURegister double_scratch1,
                                 Label* not_int32);
 
-  // Generate non FPU code to check if a double can be exactly represented by a
-  // 32-bit integer. This does not check for 0 or -0, which need
-  // to be checked for separately.
-  // Control jumps to not_int32 if the value is not a 32-bit integer, and falls
-  // through otherwise.
-  // src1 and src2 will be cloberred.
-  //
-  // Expected input:
-  // - src1: higher (exponent) part of the double value.
-  // - src2: lower (mantissa) part of the double value.
-  // Output status:
-  // - dst: 32 higher bits of the mantissa. (mantissa[51:20])
-  // - src2: contains 1.
-  // - other registers are clobbered.
-  static void DoubleIs32BitInteger(MacroAssembler* masm,
-                                   Register src1,
-                                   Register src2,
-                                   Register dst,
-                                   Register scratch,
-                                   Label* not_int32);
-
   // Generates code to call a C function to do a double operation using core
   // registers. (Used when FPU is not supported.)
   // This code never falls through, but returns with a heap number containing
@@ -739,11 +719,11 @@ class FloatingPointHelper : public AllStatic {
 };
 
 
-class StringDictionaryLookupStub: public PlatformCodeStub {
+class NameDictionaryLookupStub: public PlatformCodeStub {
  public:
   enum LookupMode { POSITIVE_LOOKUP, NEGATIVE_LOOKUP };
 
-  explicit StringDictionaryLookupStub(LookupMode mode) : mode_(mode) { }
+  explicit NameDictionaryLookupStub(LookupMode mode) : mode_(mode) { }
 
   void Generate(MacroAssembler* masm);
 
@@ -752,7 +732,7 @@ class StringDictionaryLookupStub: public PlatformCodeStub {
                                      Label* done,
                                      Register receiver,
                                      Register properties,
-                                     Handle<String> name,
+                                     Handle<Name> name,
                                      Register scratch0);
 
   static void GeneratePositiveLookup(MacroAssembler* masm,
@@ -770,14 +750,14 @@ class StringDictionaryLookupStub: public PlatformCodeStub {
   static const int kTotalProbes = 20;
 
   static const int kCapacityOffset =
-      StringDictionary::kHeaderSize +
-      StringDictionary::kCapacityIndex * kPointerSize;
+      NameDictionary::kHeaderSize +
+      NameDictionary::kCapacityIndex * kPointerSize;
 
   static const int kElementsStartOffset =
-      StringDictionary::kHeaderSize +
-      StringDictionary::kElementsStartIndex * kPointerSize;
+      NameDictionary::kHeaderSize +
+      NameDictionary::kElementsStartIndex * kPointerSize;
 
-  Major MajorKey() { return StringDictionaryLookup; }
+  Major MajorKey() { return NameDictionaryLookup; }
 
   int MinorKey() {
     return LookupModeBits::encode(mode_);

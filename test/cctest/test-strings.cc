@@ -1,4 +1,29 @@
 // Copyright 2012 the V8 project authors. All rights reserved.
+// Redistribution and use in source and binary forms, with or without
+// modification, are permitted provided that the following conditions are
+// met:
+//
+//     * Redistributions of source code must retain the above copyright
+//       notice, this list of conditions and the following disclaimer.
+//     * Redistributions in binary form must reproduce the above
+//       copyright notice, this list of conditions and the following
+//       disclaimer in the documentation and/or other materials provided
+//       with the distribution.
+//     * Neither the name of Google Inc. nor the names of its
+//       contributors may be used to endorse or promote products derived
+//       from this software without specific prior written permission.
+//
+// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+// "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+// LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+// A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+// OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+// SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+// LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+// DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+// THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+// (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 // Check that we can traverse very deep stacks of ConsStrings using
 // StringCharacterStram.  Check that Get(int) works on very deep stacks
@@ -69,19 +94,6 @@ class RandomNumberGenerator {
 
 
 using namespace v8::internal;
-
-static v8::Persistent<v8::Context> env;
-
-
-static void InitializeVM() {
-  if (env.IsEmpty()) {
-    v8::HandleScope scope;
-    const char* extensions[] = { "v8/print" };
-    v8::ExtensionConfiguration config(1, extensions);
-    env = v8::Context::New(&config);
-  }
-  env->Enter();
-}
 
 
 static const int DEEP_DEPTH = 8 * 1024;
@@ -550,8 +562,8 @@ static void TraverseFirst(Handle<String> s1, Handle<String> s2, int chars) {
 
 TEST(Traverse) {
   printf("TestTraverse\n");
-  InitializeVM();
-  v8::HandleScope scope;
+  CcTest::InitializeVM();
+  v8::HandleScope scope(CcTest::isolate());
   ZoneScope zone(Isolate::Current()->runtime_zone(), DELETE_ON_EXIT);
   ConsStringGenerationData data(false);
   Handle<String> flat = ConstructBalanced(&data);
@@ -639,7 +651,7 @@ printf(
 
 template<typename BuildString>
 void TestStringCharacterStream(BuildString build, int test_cases) {
-  InitializeVM();
+  CcTest::InitializeVM();
   Isolate* isolate = Isolate::Current();
   HandleScope outer_scope(isolate);
   ZoneScope zone(Isolate::Current()->runtime_zone(), DELETE_ON_EXIT);
@@ -839,8 +851,8 @@ static const int DEEP_ASCII_DEPTH = 100000;
 
 TEST(DeepAscii) {
   printf("TestDeepAscii\n");
-  InitializeVM();
-  v8::HandleScope scope;
+  CcTest::InitializeVM();
+  v8::HandleScope scope(CcTest::isolate());
 
   char* foo = NewArray<char>(DEEP_ASCII_DEPTH);
   for (int i = 0; i < DEEP_ASCII_DEPTH; i++) {
@@ -864,8 +876,8 @@ TEST(DeepAscii) {
 
 TEST(Utf8Conversion) {
   // Smoke test for converting strings to utf-8.
-  InitializeVM();
-  v8::HandleScope handle_scope;
+  CcTest::InitializeVM();
+  v8::HandleScope handle_scope(CcTest::isolate());
   // A simple ascii string
   const char* ascii_string = "abcdef12345";
   int len =
@@ -911,8 +923,8 @@ TEST(Utf8Conversion) {
 TEST(ExternalShortStringAdd) {
   ZoneScope zonescope(Isolate::Current()->runtime_zone(), DELETE_ON_EXIT);
 
-  InitializeVM();
-  v8::HandleScope handle_scope;
+  CcTest::InitializeVM();
+  v8::HandleScope handle_scope(CcTest::isolate());
   Zone* zone = Isolate::Current()->runtime_zone();
 
   // Make sure we cover all always-flat lengths and at least one above.
@@ -953,7 +965,7 @@ TEST(ExternalShortStringAdd) {
   }
 
   // Add the arrays with the short external strings in the global object.
-  v8::Handle<v8::Object> global = env->Global();
+  v8::Handle<v8::Object> global = CcTest::env()->Global();
   global->Set(v8_str("external_ascii"), ascii_external_strings);
   global->Set(v8_str("external_non_ascii"), non_ascii_external_strings);
   global->Set(v8_str("max_length"), v8::Integer::New(kMaxLength));
@@ -1003,8 +1015,8 @@ TEST(CachedHashOverflow) {
   Isolate* isolate = Isolate::Current();
   ZoneScope zone(isolate->runtime_zone(), DELETE_ON_EXIT);
 
-  InitializeVM();
-  v8::HandleScope handle_scope;
+  CcTest::InitializeVM();
+  v8::HandleScope handle_scope(CcTest::isolate());
   // Lines must be executed sequentially. Combining them into one script
   // makes the bug go away.
   const char* lines[] = {
@@ -1046,8 +1058,8 @@ TEST(CachedHashOverflow) {
 
 TEST(SliceFromCons) {
   FLAG_string_slices = true;
-  InitializeVM();
-  v8::HandleScope scope;
+  CcTest::InitializeVM();
+  v8::HandleScope scope(CcTest::isolate());
   Handle<String> string =
       FACTORY->NewStringFromAscii(CStrVector("parentparentparent"));
   Handle<String> parent = FACTORY->NewConsString(string, string);
@@ -1058,7 +1070,9 @@ TEST(SliceFromCons) {
   CHECK(parent->IsFlat());
   CHECK(slice->IsSlicedString());
   CHECK_EQ(SlicedString::cast(*slice)->parent(),
-           ConsString::cast(*parent)->first());
+           // Parent could have been short-circuited.
+           parent->IsConsString() ? ConsString::cast(*parent)->first()
+                                  : *parent);
   CHECK(SlicedString::cast(*slice)->parent()->IsSeqString());
   CHECK(slice->IsFlat());
 }
@@ -1078,8 +1092,8 @@ class AsciiVectorResource : public v8::String::ExternalAsciiStringResource {
 
 TEST(SliceFromExternal) {
   FLAG_string_slices = true;
-  InitializeVM();
-  v8::HandleScope scope;
+  CcTest::InitializeVM();
+  v8::HandleScope scope(CcTest::isolate());
   AsciiVectorResource resource(
       i::Vector<const char>("abcdefghijklmnopqrstuvwxyz", 26));
   Handle<String> string = FACTORY->NewExternalStringFromAscii(&resource);
@@ -1097,8 +1111,8 @@ TEST(TrivialSlice) {
   // This tests whether a slice that contains the entire parent string
   // actually creates a new string (it should not).
   FLAG_string_slices = true;
-  InitializeVM();
-  v8::HandleScope scope;
+  CcTest::InitializeVM();
+  v8::HandleScope scope(CcTest::isolate());
   v8::Local<v8::Value> result;
   Handle<String> string;
   const char* init = "var str = 'abcdefghijklmnopqrstuvwxyz';";
@@ -1126,8 +1140,8 @@ TEST(SliceFromSlice) {
   // This tests whether a slice that contains the entire parent string
   // actually creates a new string (it should not).
   FLAG_string_slices = true;
-  InitializeVM();
-  v8::HandleScope scope;
+  CcTest::InitializeVM();
+  v8::HandleScope scope(CcTest::isolate());
   v8::Local<v8::Value> result;
   Handle<String> string;
   const char* init = "var str = 'abcdefghijklmnopqrstuvwxyz';";
@@ -1171,7 +1185,7 @@ TEST(AsciiArrayJoin) {
       "for (var i = 1; i <= two_14; i++) a.push(s);"
       "a.join("");";
 
-  v8::HandleScope scope;
+  v8::HandleScope scope(v8::Isolate::GetCurrent());
   LocalContext context;
   v8::V8::IgnoreOutOfMemoryException();
   v8::Local<v8::Script> script =
@@ -1194,8 +1208,8 @@ TEST(RobustSubStringStub) {
   // This tests whether the SubStringStub can handle unsafe arguments.
   // If not recognized, those unsafe arguments lead to out-of-bounds reads.
   FLAG_allow_natives_syntax = true;
-  InitializeVM();
-  v8::HandleScope scope;
+  CcTest::InitializeVM();
+  v8::HandleScope scope(CcTest::isolate());
   v8::Local<v8::Value> result;
   Handle<String> string;
   CompileRun("var short = 'abcdef';");
@@ -1238,8 +1252,8 @@ TEST(RobustSubStringStub) {
 
 TEST(RegExpOverflow) {
   // Result string has the length 2^32, causing a 32-bit integer overflow.
-  InitializeVM();
-  v8::HandleScope scope;
+  CcTest::InitializeVM();
+  v8::HandleScope scope(CcTest::isolate());
   LocalContext context;
   v8::V8::IgnoreOutOfMemoryException();
   v8::Local<v8::Value> result = CompileRun(
@@ -1254,8 +1268,8 @@ TEST(RegExpOverflow) {
 
 
 TEST(StringReplaceAtomTwoByteResult) {
-  InitializeVM();
-  v8::HandleScope scope;
+  CcTest::InitializeVM();
+  v8::HandleScope scope(CcTest::isolate());
   LocalContext context;
   v8::Local<v8::Value> result = CompileRun(
       "var subject = 'ascii~only~string~'; "
@@ -1277,7 +1291,6 @@ TEST(IsAscii) {
 
 
 
-#ifdef ENABLE_LATIN_1
 template<typename Op, bool return_first>
 static uint16_t ConvertLatin1(uint16_t c) {
   uint32_t result[Op::kMaxWidth];
@@ -1300,7 +1313,6 @@ static void CheckCanonicalEquivalence(uint16_t c, uint16_t test) {
 
 
 TEST(Latin1IgnoreCase) {
-  if (true) return;
   using namespace unibrow;
   for (uint16_t c = Latin1::kMaxChar + 1; c != 0; c++) {
     uint16_t lower = ConvertLatin1<ToLowercase, false>(c);
@@ -1332,4 +1344,3 @@ TEST(Latin1IgnoreCase) {
     CHECK_EQ(Min(upper, lower), test);
   }
 }
-#endif  // ENABLE_LATIN_1

@@ -29,7 +29,6 @@
 
 {
   'variables': {
-    'library%': 'static_library',
     'component%': 'static_library',
     'visibility%': 'hidden',
     'v8_enable_backtrace%': 0,
@@ -77,9 +76,11 @@
       }],
     ],
     # Default ARM variable settings.
-    'armv7%': 1,
+    'armv7%': 'default',
     'arm_neon%': 0,
     'arm_fpu%': 'vfpv3',
+    'arm_float_abi%': 'default',
+    'arm_thumb': 'default',
   },
   'target_defaults': {
     'default_configuration': 'Debug',

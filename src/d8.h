@@ -123,17 +123,16 @@ class LineEditor {
   virtual ~LineEditor() { }
 
   virtual Handle<String> Prompt(const char* prompt) = 0;
-  virtual bool Open() { return true; }
+  virtual bool Open(Isolate* isolate) { return true; }
   virtual bool Close() { return true; }
   virtual void AddHistory(const char* str) { }
 
   const char* name() { return name_; }
-  static LineEditor* Get();
+  static LineEditor* Get() { return current_; }
  private:
   Type type_;
   const char* name_;
-  LineEditor* next_;
-  static LineEditor* first_;
+  static LineEditor* current_;
 };
 
 
@@ -266,12 +265,13 @@ class Shell : public i::AllStatic {
 #endif  // V8_SHARED
 
  public:
-  static bool ExecuteString(Handle<String> source,
+  static bool ExecuteString(Isolate* isolate,
+                            Handle<String> source,
                             Handle<Value> name,
                             bool print_result,
                             bool report_exceptions);
   static const char* ToCString(const v8::String::Utf8Value& value);
-  static void ReportException(TryCatch* try_catch);
+  static void ReportException(Isolate* isolate, TryCatch* try_catch);
   static Handle<String> ReadFile(Isolate* isolate, const char* name);
   static Persistent<Context> CreateEvaluationContext(Isolate* isolate);
   static int RunMain(Isolate* isolate, int argc, char* argv[]);
@@ -280,7 +280,8 @@ class Shell : public i::AllStatic {
   static void OnExit();
 
 #ifndef V8_SHARED
-  static Handle<Array> GetCompletions(Handle<String> text,
+  static Handle<Array> GetCompletions(Isolate* isolate,
+                                      Handle<String> text,
                                       Handle<String> full);
   static int* LookupCounter(const char* name);
   static void* CreateHistogram(const char* name,
@@ -297,13 +298,21 @@ class Shell : public i::AllStatic {
 #endif  // ENABLE_DEBUGGER_SUPPORT
 #endif  // V8_SHARED
 
-#ifdef WIN32
-#undef Yield
-#endif
+  static Handle<Value> RealmCurrent(const Arguments& args);
+  static Handle<Value> RealmOwner(const Arguments& args);
+  static Handle<Value> RealmGlobal(const Arguments& args);
+  static Handle<Value> RealmCreate(const Arguments& args);
+  static Handle<Value> RealmDispose(const Arguments& args);
+  static Handle<Value> RealmSwitch(const Arguments& args);
+  static Handle<Value> RealmEval(const Arguments& args);
+  static Handle<Value> RealmSharedGet(Local<String> property,
+                                      const AccessorInfo& info);
+  static void RealmSharedSet(Local<String> property,
+                             Local<Value> value,
+                             const AccessorInfo& info);
 
   static Handle<Value> Print(const Arguments& args);
   static Handle<Value> Write(const Arguments& args);
-  static Handle<Value> Yield(const Arguments& args);
   static Handle<Value> Quit(const Arguments& args);
   static Handle<Value> Version(const Arguments& args);
   static Handle<Value> EnableProfiler(const Arguments& args);

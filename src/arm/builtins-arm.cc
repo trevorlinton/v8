@@ -124,12 +124,7 @@ static void AllocateEmptyJSArray(MacroAssembler* masm,
   if (initial_capacity > 0) {
     size += FixedArray::SizeFor(initial_capacity);
   }
-  __ AllocateInNewSpace(size,
-                        result,
-                        scratch2,
-                        scratch3,
-                        gc_required,
-                        TAG_OBJECT);
+  __ Allocate(size, result, scratch2, scratch3, gc_required, TAG_OBJECT);
 
   // Allocated the JSArray. Now initialize the fields except for the elements
   // array.
@@ -226,13 +221,12 @@ static void AllocateJSArray(MacroAssembler* masm,
   __ add(elements_array_end,
          elements_array_end,
          Operand(array_size, ASR, kSmiTagSize));
-  __ AllocateInNewSpace(
-      elements_array_end,
-      result,
-      scratch1,
-      scratch2,
-      gc_required,
-      static_cast<AllocationFlags>(TAG_OBJECT | SIZE_IN_WORDS));
+  __ Allocate(elements_array_end,
+              result,
+              scratch1,
+              scratch2,
+              gc_required,
+              static_cast<AllocationFlags>(TAG_OBJECT | SIZE_IN_WORDS));
 
   // Allocated the JSArray. Now initialize the fields except for the elements
   // array.
@@ -312,8 +306,7 @@ static void AllocateJSArray(MacroAssembler* masm,
 // entering the generic code. In both cases argc in r0 needs to be preserved.
 // Both registers are preserved by this code so no need to differentiate between
 // construct call and normal call.
-static void ArrayNativeCode(MacroAssembler* masm,
-                            Label* call_generic_code) {
+void ArrayNativeCode(MacroAssembler* masm, Label* call_generic_code) {
   Counters* counters = masm->isolate()->counters();
   Label argc_one_or_more, argc_two_or_more, not_empty_array, empty_array,
       has_non_smi_element, finish, cant_transition_map, not_double;
@@ -538,26 +531,26 @@ void Builtins::Generate_ArrayCode(MacroAssembler* masm) {
 }
 
 
-void Builtins::Generate_ArrayConstructCode(MacroAssembler* masm) {
+void Builtins::Generate_CommonArrayConstructCode(MacroAssembler* masm) {
   // ----------- S t a t e -------------
   //  -- r0     : number of arguments
   //  -- r1     : constructor function
+  //  -- r2     : type info cell
   //  -- lr     : return address
   //  -- sp[...]: constructor arguments
   // -----------------------------------
-  Label generic_constructor;
 
   if (FLAG_debug_code) {
     // The array construct code is only set for the builtin and internal
     // Array functions which always have a map.
     // Initial map for the builtin Array function should be a map.
-    __ ldr(r2, FieldMemOperand(r1, JSFunction::kPrototypeOrInitialMapOffset));
-    __ tst(r2, Operand(kSmiTagMask));
+    __ ldr(r3, FieldMemOperand(r1, JSFunction::kPrototypeOrInitialMapOffset));
+    __ tst(r3, Operand(kSmiTagMask));
     __ Assert(ne, "Unexpected initial map for Array function");
-    __ CompareObjectType(r2, r3, r4, MAP_TYPE);
+    __ CompareObjectType(r3, r3, r4, MAP_TYPE);
     __ Assert(eq, "Unexpected initial map for Array function");
   }
-
+  Label generic_constructor;
   // Run the native code for the Array function called as a constructor.
   ArrayNativeCode(masm, &generic_constructor);
 
@@ -619,12 +612,12 @@ void Builtins::Generate_StringConstructCode(MacroAssembler* masm) {
   // -----------------------------------
 
   Label gc_required;
-  __ AllocateInNewSpace(JSValue::kSize,
-                        r0,  // Result.
-                        r3,  // Scratch.
-                        r4,  // Scratch.
-                        &gc_required,
-                        TAG_OBJECT);
+  __ Allocate(JSValue::kSize,
+              r0,  // Result.
+              r3,  // Scratch.
+              r4,  // Scratch.
+              &gc_required,
+              TAG_OBJECT);
 
   // Initialising the String Object.
   Register map = r3;
@@ -682,7 +675,7 @@ void Builtins::Generate_StringConstructCode(MacroAssembler* masm) {
   // Load the empty string into r2, remove the receiver from the
   // stack, and jump back to the case where the argument is a string.
   __ bind(&no_arguments);
-  __ LoadRoot(argument, Heap::kEmptyStringRootIndex);
+  __ LoadRoot(argument, Heap::kempty_stringRootIndex);
   __ Drop(1);
   __ b(&argument_is_string);
 
@@ -709,6 +702,35 @@ static void GenerateTailCallToSharedCode(MacroAssembler* masm) {
 
 void Builtins::Generate_InRecompileQueue(MacroAssembler* masm) {
   GenerateTailCallToSharedCode(masm);
+}
+
+
+void Builtins::Generate_InstallRecompiledCode(MacroAssembler* masm) {
+  // Enter an internal frame.
+  {
+    FrameScope scope(masm, StackFrame::INTERNAL);
+
+    // Preserve the function.
+    __ push(r1);
+    // Push call kind information.
+    __ push(r5);
+
+    // Push the function on the stack as the argument to the runtime function.
+    __ push(r1);
+    __ CallRuntime(Runtime::kInstallRecompiledCode, 1);
+    // Calculate the entry point.
+    __ add(r2, r0, Operand(Code::kHeaderSize - kHeapObjectTag));
+
+    // Restore call kind information.
+    __ pop(r5);
+    // Restore saved function.
+    __ pop(r1);
+
+    // Tear down internal frame.
+  }
+
+  // Do a tail-call of the compiled function.
+  __ Jump(r2);
 }
 
 
@@ -816,7 +838,7 @@ static void Generate_JSConstructStubHelper(MacroAssembler* masm,
       // r1: constructor function
       // r2: initial map
       __ ldrb(r3, FieldMemOperand(r2, Map::kInstanceSizeOffset));
-      __ AllocateInNewSpace(r3, r4, r5, r6, &rt_call, SIZE_IN_WORDS);
+      __ Allocate(r3, r4, r5, r6, &rt_call, SIZE_IN_WORDS);
 
       // Allocated the JSObject, now initialize the fields. Map is set to
       // initial map and properties and elements are set to empty fixed array.
@@ -891,7 +913,7 @@ static void Generate_JSConstructStubHelper(MacroAssembler* masm,
       // r4: JSObject
       // r5: start of next object
       __ add(r0, r3, Operand(FixedArray::kHeaderSize / kPointerSize));
-      __ AllocateInNewSpace(
+      __ Allocate(
           r0,
           r5,
           r6,
@@ -1044,7 +1066,7 @@ static void Generate_JSConstructStubHelper(MacroAssembler* masm,
 
     // If the type of the result (stored in its map) is less than
     // FIRST_SPEC_OBJECT_TYPE, it is not an object in the ECMA sense.
-    __ CompareObjectType(r0, r3, r3, FIRST_SPEC_OBJECT_TYPE);
+    __ CompareObjectType(r0, r1, r3, FIRST_SPEC_OBJECT_TYPE);
     __ b(ge, &exit);
 
     // Throw away the result of the constructor invocation and use the
@@ -1141,6 +1163,10 @@ static void Generate_JSEntryTrampolineHelper(MacroAssembler* masm,
     // Invoke the code and pass argc as r0.
     __ mov(r0, Operand(r3));
     if (is_construct) {
+      // No type feedback cell is available
+      Handle<Object> undefined_sentinel(
+          masm->isolate()->heap()->undefined_value(), masm->isolate());
+      __ mov(r2, Operand(undefined_sentinel));
       CallConstructStub stub(NO_CALL_FUNCTION_FLAGS);
       __ CallStub(&stub);
     } else {
@@ -1335,12 +1361,6 @@ void Builtins::Generate_NotifyOSR(MacroAssembler* masm) {
 
 
 void Builtins::Generate_OnStackReplacement(MacroAssembler* masm) {
-  CpuFeatures::TryForceFeatureScope scope(VFP3);
-  if (!CPU::SupportsCrankshaft()) {
-    __ Abort("Unreachable code: Cannot optimize without VFP3 support.");
-    return;
-  }
-
   // Lookup the function in the JavaScript frame and push it as an
   // argument to the on-stack replacement function.
   __ ldr(r0, MemOperand(fp, JavaScriptFrameConstants::kFunctionOffset));

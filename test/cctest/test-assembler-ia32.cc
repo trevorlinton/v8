@@ -44,24 +44,14 @@ typedef int (*F1)(int x);
 typedef int (*F2)(int x, int y);
 
 
-static v8::Persistent<v8::Context> env;
-
-
-static void InitializeVM() {
-  if (env.IsEmpty()) {
-    env = v8::Context::New();
-  }
-}
-
-
 #define __ assm.
 
 TEST(AssemblerIa320) {
-  InitializeVM();
-  v8::HandleScope scope;
+  CcTest::InitializeVM();
+  Isolate* isolate = reinterpret_cast<Isolate*>(CcTest::isolate());
+  HandleScope scope(isolate);
 
   v8::internal::byte buffer[256];
-  Isolate* isolate = Isolate::Current();
   Assembler assm(isolate, buffer, sizeof buffer);
 
   __ mov(eax, Operand(esp, 4));
@@ -86,11 +76,11 @@ TEST(AssemblerIa320) {
 
 
 TEST(AssemblerIa321) {
-  InitializeVM();
-  v8::HandleScope scope;
+  CcTest::InitializeVM();
+  Isolate* isolate = reinterpret_cast<Isolate*>(CcTest::isolate());
+  HandleScope scope(isolate);
 
   v8::internal::byte buffer[256];
-  Isolate* isolate = Isolate::Current();
   Assembler assm(isolate, buffer, sizeof buffer);
   Label L, C;
 
@@ -125,11 +115,11 @@ TEST(AssemblerIa321) {
 
 
 TEST(AssemblerIa322) {
-  InitializeVM();
-  v8::HandleScope scope;
+  CcTest::InitializeVM();
+  Isolate* isolate = reinterpret_cast<Isolate*>(CcTest::isolate());
+  HandleScope scope(isolate);
 
   v8::internal::byte buffer[256];
-  Isolate* isolate = Isolate::Current();
   Assembler assm(isolate, buffer, sizeof buffer);
   Label L, C;
 
@@ -170,17 +160,17 @@ TEST(AssemblerIa322) {
 typedef int (*F3)(float x);
 
 TEST(AssemblerIa323) {
-  InitializeVM();
+  CcTest::InitializeVM();
   if (!CpuFeatures::IsSupported(SSE2)) return;
 
-  v8::HandleScope scope;
+  Isolate* isolate = reinterpret_cast<Isolate*>(CcTest::isolate());
+  HandleScope scope(isolate);
 
   v8::internal::byte buffer[256];
-  Isolate* isolate = Isolate::Current();
   Assembler assm(isolate, buffer, sizeof buffer);
 
   CHECK(CpuFeatures::IsSupported(SSE2));
-  { CpuFeatures::Scope fscope(SSE2);
+  { CpuFeatureScope fscope(&assm, SSE2);
     __ cvttss2si(eax, Operand(esp, 4));
     __ ret(0);
   }
@@ -206,17 +196,17 @@ TEST(AssemblerIa323) {
 typedef int (*F4)(double x);
 
 TEST(AssemblerIa324) {
-  InitializeVM();
+  CcTest::InitializeVM();
   if (!CpuFeatures::IsSupported(SSE2)) return;
 
-  v8::HandleScope scope;
+  Isolate* isolate = reinterpret_cast<Isolate*>(CcTest::isolate());
+  HandleScope scope(isolate);
 
   v8::internal::byte buffer[256];
-  Isolate* isolate = Isolate::Current();
   Assembler assm(isolate, buffer, sizeof buffer);
 
   CHECK(CpuFeatures::IsSupported(SSE2));
-  CpuFeatures::Scope fscope(SSE2);
+  CpuFeatureScope fscope(&assm, SSE2);
   __ cvttsd2si(eax, Operand(esp, 4));
   __ ret(0);
 
@@ -240,11 +230,11 @@ TEST(AssemblerIa324) {
 
 static int baz = 42;
 TEST(AssemblerIa325) {
-  InitializeVM();
-  v8::HandleScope scope;
+  CcTest::InitializeVM();
+  Isolate* isolate = reinterpret_cast<Isolate*>(CcTest::isolate());
+  HandleScope scope(isolate);
 
   v8::internal::byte buffer[256];
-  Isolate* isolate = Isolate::Current();
   Assembler assm(isolate, buffer, sizeof buffer);
 
   __ mov(eax, Operand(reinterpret_cast<intptr_t>(&baz), RelocInfo::NONE32));
@@ -265,16 +255,15 @@ TEST(AssemblerIa325) {
 typedef double (*F5)(double x, double y);
 
 TEST(AssemblerIa326) {
-  InitializeVM();
+  CcTest::InitializeVM();
   if (!CpuFeatures::IsSupported(SSE2)) return;
 
-  v8::HandleScope scope;
-  CHECK(CpuFeatures::IsSupported(SSE2));
-  CpuFeatures::Scope fscope(SSE2);
+  Isolate* isolate = reinterpret_cast<Isolate*>(CcTest::isolate());
+  HandleScope scope(isolate);
   v8::internal::byte buffer[256];
-  Isolate* isolate = Isolate::Current();
   Assembler assm(isolate, buffer, sizeof buffer);
 
+  CpuFeatureScope fscope(&assm, SSE2);
   __ movdbl(xmm0, Operand(esp, 1 * kPointerSize));
   __ movdbl(xmm1, Operand(esp, 3 * kPointerSize));
   __ addsd(xmm0, xmm1);
@@ -312,15 +301,14 @@ TEST(AssemblerIa326) {
 typedef double (*F6)(int x);
 
 TEST(AssemblerIa328) {
-  InitializeVM();
+  CcTest::InitializeVM();
   if (!CpuFeatures::IsSupported(SSE2)) return;
 
-  v8::HandleScope scope;
-  CHECK(CpuFeatures::IsSupported(SSE2));
-  CpuFeatures::Scope fscope(SSE2);
+  Isolate* isolate = reinterpret_cast<Isolate*>(CcTest::isolate());
+  HandleScope scope(isolate);
   v8::internal::byte buffer[256];
-  Isolate* isolate = Isolate::Current();
   Assembler assm(isolate, buffer, sizeof buffer);
+  CpuFeatureScope fscope(&assm, SSE2);
   __ mov(eax, Operand(esp, 4));
   __ cvtsi2sd(xmm0, eax);
   // Copy xmm0 to st(0) using eight bytes of stack.
@@ -350,10 +338,10 @@ TEST(AssemblerIa328) {
 typedef int (*F7)(double x, double y);
 
 TEST(AssemblerIa329) {
-  InitializeVM();
-  v8::HandleScope scope;
+  CcTest::InitializeVM();
+  Isolate* isolate = reinterpret_cast<Isolate*>(CcTest::isolate());
+  HandleScope scope(isolate);
   v8::internal::byte buffer[256];
-  Isolate* isolate = Isolate::Current();
   MacroAssembler assm(isolate, buffer, sizeof buffer);
   enum { kEqual = 0, kGreater = 1, kLess = 2, kNaN = 3, kUndefined = 4 };
   Label equal_l, less_l, greater_l, nan_l;
@@ -406,9 +394,9 @@ TEST(AssemblerIa329) {
 
 TEST(AssemblerIa3210) {
   // Test chaining of label usages within instructions (issue 1644).
-  InitializeVM();
-  v8::HandleScope scope;
-  Isolate* isolate = Isolate::Current();
+  CcTest::InitializeVM();
+  Isolate* isolate = reinterpret_cast<Isolate*>(CcTest::isolate());
+  HandleScope scope(isolate);
   Assembler assm(isolate, NULL, 0);
 
   Label target;
@@ -420,10 +408,10 @@ TEST(AssemblerIa3210) {
 
 
 TEST(AssemblerMultiByteNop) {
-  InitializeVM();
-  v8::HandleScope scope;
+  CcTest::InitializeVM();
+  Isolate* isolate = reinterpret_cast<Isolate*>(CcTest::isolate());
+  HandleScope scope(isolate);
   v8::internal::byte buffer[1024];
-  Isolate* isolate = Isolate::Current();
   Assembler assm(isolate, buffer, sizeof(buffer));
   __ push(ebx);
   __ push(ecx);

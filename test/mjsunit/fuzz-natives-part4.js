@@ -151,6 +151,7 @@ var knownProblems = {
   "LazyCompile": true,
   "LazyRecompile": true,
   "ParallelRecompile": true,
+  "InstallRecompiledCode": true,
   "NotifyDeoptimized": true,
   "NotifyOSR": true,
   "CreateObjectLiteralBoilerplate": true,
@@ -200,9 +201,9 @@ var knownProblems = {
   "_OneByteSeqStringSetChar": true,
   "_TwoByteSeqStringSetChar": true,
 
-  // Only for debugging parallel recompilation.
-  "InstallRecompiledCode": true,
-  "ForceParallelRecompile": true
+  // Only applicable to generators.
+  "_GeneratorSend": true,
+  "_GeneratorThrow": true
 };
 
 var currentlyUncallable = {

@@ -40,15 +40,6 @@
 using namespace v8::internal;
 
 
-static v8::Persistent<v8::Context> env;
-
-static void InitializeVM() {
-  if (env.IsEmpty()) {
-    env = v8::Context::New();
-  }
-}
-
-
 bool DisassembleAndCompare(byte* pc, const char* compare_string) {
   disasm::NameConverter converter;
   disasm::Disassembler disasm(converter);
@@ -72,11 +63,12 @@ bool DisassembleAndCompare(byte* pc, const char* compare_string) {
 // Set up V8 to a state where we can at least run the assembler and
 // disassembler. Declare the variables and allocate the data structures used
 // in the rest of the macros.
-#define SET_UP()                                           \
-  InitializeVM();                                         \
-  v8::HandleScope scope;                                  \
+#define SET_UP()                                          \
+  CcTest::InitializeVM();                                 \
+  Isolate* isolate = Isolate::Current();                  \
+  HandleScope scope(isolate);                             \
   byte *buffer = reinterpret_cast<byte*>(malloc(4*1024)); \
-  Assembler assm(Isolate::Current(), buffer, 4*1024);     \
+  Assembler assm(isolate, buffer, 4*1024);                \
   bool failure = false;
 
 
@@ -424,7 +416,7 @@ TEST(Vfp) {
   SET_UP();
 
   if (CpuFeatures::IsSupported(VFP3)) {
-    CpuFeatures::Scope scope(VFP3);
+    CpuFeatureScope scope(&assm, VFP3);
     COMPARE(vmov(d0, r2, r3),
             "ec432b10       vmov d0, r2, r3");
     COMPARE(vmov(r2, r3, d0),
@@ -834,7 +826,7 @@ TEST(LoadStore) {
           "e7210002       str r0, [r1, -r2]!");
 
   if (CpuFeatures::IsSupported(ARMv7)) {
-    CpuFeatures::Scope scope(ARMv7);
+    CpuFeatureScope scope(&assm, ARMv7);
     COMPARE(ldrd(r0, r1, MemOperand(r1)),
             "e1c100d0       ldrd r0, [r1, #+0]");
     COMPARE(ldrd(r2, r3, MemOperand(r3, 127)),

@@ -74,7 +74,6 @@ struct Register {
   static const int kNumRegisters = v8::internal::kNumRegisters;
   static const int kMaxNumAllocatableRegisters = 14;  // v0 through t7.
   static const int kSizeInBytes = 4;
-  static const int kGPRsPerNonFPUDouble = 2;
 
   inline static int NumAllocatableRegisters();
 
@@ -300,9 +299,6 @@ const FPURegister f29 = { 29 };
 const FPURegister f30 = { 30 };
 const FPURegister f31 = { 31 };
 
-const Register sfpd_lo  = { kRegister_t6_Code };
-const Register sfpd_hi  = { kRegister_t7_Code };
-
 // Register aliases.
 // cp is assumed to be a callee saved register.
 // Defined using #define instead of "static const Register&" because Clang
@@ -393,7 +389,7 @@ class MemOperand : public Operand {
 
 
 // CpuFeatures keeps track of which features are supported by the target CPU.
-// Supported features must be enabled by a Scope before use.
+// Supported features must be enabled by a CpuFeatureScope before use.
 class CpuFeatures : public AllStatic {
  public:
   // Detect features of the target CPU. Set safe defaults if the serializer
@@ -403,92 +399,26 @@ class CpuFeatures : public AllStatic {
   // Check whether a feature is supported by the target CPU.
   static bool IsSupported(CpuFeature f) {
     ASSERT(initialized_);
-    if (f == FPU && !FLAG_enable_fpu) return false;
     return (supported_ & (1u << f)) != 0;
   }
 
-
-#ifdef DEBUG
-  // Check whether a feature is currently enabled.
-  static bool IsEnabled(CpuFeature f) {
+  static bool IsFoundByRuntimeProbingOnly(CpuFeature f) {
     ASSERT(initialized_);
-    Isolate* isolate = Isolate::UncheckedCurrent();
-    if (isolate == NULL) {
-      // When no isolate is available, work as if we're running in
-      // release mode.
-      return IsSupported(f);
-    }
-    unsigned enabled = static_cast<unsigned>(isolate->enabled_cpu_features());
-    return (enabled & (1u << f)) != 0;
+    return (found_by_runtime_probing_only_ &
+            (static_cast<uint64_t>(1) << f)) != 0;
   }
-#endif
 
-  // Enable a specified feature within a scope.
-  class Scope BASE_EMBEDDED {
-#ifdef DEBUG
-
-   public:
-    explicit Scope(CpuFeature f) {
-      unsigned mask = 1u << f;
-      ASSERT(CpuFeatures::IsSupported(f));
-      ASSERT(!Serializer::enabled() ||
-             (CpuFeatures::found_by_runtime_probing_ & mask) == 0);
-      isolate_ = Isolate::UncheckedCurrent();
-      old_enabled_ = 0;
-      if (isolate_ != NULL) {
-        old_enabled_ = static_cast<unsigned>(isolate_->enabled_cpu_features());
-        isolate_->set_enabled_cpu_features(old_enabled_ | mask);
-      }
-    }
-    ~Scope() {
-      ASSERT_EQ(Isolate::UncheckedCurrent(), isolate_);
-      if (isolate_ != NULL) {
-        isolate_->set_enabled_cpu_features(old_enabled_);
-      }
-    }
-
- private:
-    Isolate* isolate_;
-    unsigned old_enabled_;
-#else
-
- public:
-    explicit Scope(CpuFeature f) {}
-#endif
-  };
-
-  class TryForceFeatureScope BASE_EMBEDDED {
-   public:
-    explicit TryForceFeatureScope(CpuFeature f)
-        : old_supported_(CpuFeatures::supported_) {
-      if (CanForce()) {
-        CpuFeatures::supported_ |= (1u << f);
-      }
-    }
-
-    ~TryForceFeatureScope() {
-      if (CanForce()) {
-        CpuFeatures::supported_ = old_supported_;
-      }
-    }
-
-   private:
-    static bool CanForce() {
-      // It's only safe to temporarily force support of CPU features
-      // when there's only a single isolate, which is guaranteed when
-      // the serializer is enabled.
-      return Serializer::enabled();
-    }
-
-    const unsigned old_supported_;
-  };
+  static bool IsSafeForSnapshot(CpuFeature f) {
+    return (IsSupported(f) &&
+            (!Serializer::enabled() || !IsFoundByRuntimeProbingOnly(f)));
+  }
 
  private:
 #ifdef DEBUG
   static bool initialized_;
 #endif
   static unsigned supported_;
-  static unsigned found_by_runtime_probing_;
+  static unsigned found_by_runtime_probing_only_;
 
   friend class ExternalReference;
   DISALLOW_COPY_AND_ASSIGN(CpuFeatures);
@@ -1007,6 +937,7 @@ class Assembler : public AssemblerBase {
   static Instr SetAddImmediateOffset(Instr instr, int16_t offset);
 
   static bool IsAndImmediate(Instr instr);
+  static bool IsEmittedConstant(Instr instr);
 
   void CheckTrampolinePool();
 

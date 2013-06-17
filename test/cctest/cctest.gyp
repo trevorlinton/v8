@@ -59,6 +59,7 @@
         'test-dataflow.cc',
         'test-date.cc',
         'test-debug.cc',
+        'test-declarative-accessors.cc',
         'test-decls.cc',
         'test-deoptimization.cc',
         'test-dictionary.cc',
@@ -69,6 +70,7 @@
         'test-fixed-dtoa.cc',
         'test-flags.cc',
         'test-func-name-inference.cc',
+        'test-global-handles.cc',
         'test-global-object.cc',
         'test-hashing.cc',
         'test-hashmap.cc',
@@ -92,6 +94,7 @@
         'test-sockets.cc',
         'test-spaces.cc',
         'test-strings.cc',
+        'test-symbols.cc',
         'test-strtod.cc',
         'test-thread-termination.cc',
         'test-threads.cc',
@@ -156,7 +159,9 @@
               'dependencies': ['../../tools/gyp/v8.gyp:v8_snapshot'],
             },
             {
-              'dependencies': ['../../tools/gyp/v8.gyp:v8_nosnapshot'],
+              'dependencies': [
+                '../../tools/gyp/v8.gyp:v8_nosnapshot.<(v8_target_arch)',
+              ],
             }],
           ],
         }, {

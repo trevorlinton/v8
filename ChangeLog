@@ -1,3 +1,223 @@
+2013-04-30: Version 3.18.5
+
+        Allowed setting debugger breakpoints on CompareNilICs (issue 2660)
+
+        Fixed beyond-heap load on x64 Crankshafted StringCharFromCode
+        (Chromium issue 235311)
+
+        Change 'Parse error' to three more informative messages.
+        (Chromium issue 2636)
+
+        Performance and stability improvements on all platforms.
+
+
+2013-04-26: Version 3.18.4
+
+        Added a preliminary API for ES6 ArrayBuffers
+
+        Replaced qsort with std::sort. (Chromium issue 2639)
+
+        Performance and stability improvements on all platforms.
+
+
+2013-04-24: Version 3.18.3
+
+        Exposed the GC under a name that is less collision prone than window.gc.
+        (issue 2641)
+
+        Do not emit double values at their use sites. (Chromium issue 234101)
+
+        Added methods to allow resuming execution after calling
+        TerminateExecution(). (issue 2361)
+
+        Performance and stability improvements on all platforms.
+
+
+2013-04-22: Version 3.18.2
+
+        OS::MemMove/OS::MemCopy: Don't call through to generated code when size
+        == 0 to avoid prefetching invalid memory (Chromium issue 233500)
+
+        Removed heap snapshot size limit. (Chromium issue 232305)
+
+        Performance and stability improvements on all platforms.
+
+
+2013-04-18: Version 3.18.1
+
+        Removed SCons related files and deprecated test suite configurations.
+
+        Improved handling of unary plus (issue 2527).
+
+        Performance and stability improvements on all platforms.
+
+
+2013-04-17: Version 3.18.0
+
+        Enabled pretenuring of fast literals in high promotion mode.
+
+        Removed preparser library; link preparser executable against full V8.
+
+        Fixed set-up of intrinsic's 'constructor' properties.
+        (Chromium issue 229445)
+
+        ES6 symbols: extended V8 API to support symbols (issue 2158).
+
+        Removed ARM support for VFP2.
+
+        Made __proto__ a real JavaScript accessor property.
+        (issue 1949 and issue 2606)
+
+        Performance and stability improvements on all platforms.
+
+
+2013-04-04: Version 3.17.16
+
+        Stack trace API: poison stack frames below the first strict mode frame.
+        (issue 2564)
+
+        Made Isolate::GetHeapStatistics robust against half-initialized
+        isolates (Chromium issue 2591).
+
+        Finished implementation of ES6 symbols aka. private names (issue 2158).
+
+        Performance and stability improvements on all platforms.
+
+
+2013-03-21: Version 3.17.15
+
+        Rolled back API changes to maintain compatibility with older
+        3.17.x versions of V8.
+
+        Disable zapping of global handles in release mode.
+
+        Always mark the entire valid prefix of the descriptor array.
+        (Chromium issue 196331)
+
+        Use internal memcpy for CopyWords and when copying code.
+        (Chromium issue 196330)
+
+        Performance and stability improvements on all platforms.
+
+
+2013-03-20: Version 3.17.14
+
+        Use internal memcpy when initializing code objects.
+        (Chromium issue 196330)
+
+        Disabled weak embedded maps because of crashes.
+        (Chromium issues 172489, 217858)
+
+        Performance and stability improvements on all platforms.
+
+
+2013-03-19: Version 3.17.13
+
+        Turned Flags into a uint32_t typedef (Chromium issue 194749).
+
+        Performance and stability improvements on all platforms.
+
+
+2013-03-18: Version 3.17.12
+
+        Unified kMaxArguments with number of bits used to encode it.
+        (Chromium issue 211741)
+
+        Fixed detection of |handle_smi| case in
+        HOptimizedGraphBuilder::HandlePolymorphicCallNamed.
+        (Chromium issue 196583)
+
+        Performance and stability improvements on all platforms.
+
+
+2013-03-15: Version 3.17.11
+
+        Added a version of the v8::HandleScope constructor with an v8::Isolate
+        parameter and made AdjustAmountOfExternalAllocatedMemory an instance
+        method of v8::Isolate.
+        (issue 2487)
+
+        Fixed two register allocator bugs (off-by-one error/failure
+        propagation). (issue 2576)
+
+        Fixed huge heap snapshot when a heavily shared context has many
+        variables. (Chromium issue 145687)
+
+        Performance and stability improvements on all platforms.
+
+
+2013-03-13: Version 3.17.10
+
+        Fixed heap snapshot creation for Harmony collections. (issue 2535)
+
+        Fixed register allocation corner case. (Chromium issue 177883)
+
+        Performance and stability improvements on all platforms.
+
+
+2013-03-08: Version 3.17.9
+
+        Restored Function()'s expected string representation. (issue 2470)
+
+        Enabled deprecatations (again). (issue 2487)
+
+        Avoid bool to Oddball conversions by being lazy. (issue 2491)
+
+        Added %p option to --logfile.
+
+        Hardened Function()'s parsing of function literals. (issue 2470)
+
+        ES6 symbols: Refine test for getOwnPropertyNames. (issue 2158)
+
+        Performance and stability improvements on all platforms.
+
+
+2013-03-07: Version 3.17.8
+
+        Added missing license headers. (Chromium issue 98597)
+
+        Inserted missing type cast in JSON.stringify. (issue 2570)
+
+        Reverted "Send SIGPROF signals on the profiler event processor thread"
+        (issue 2571)
+
+        Fixed Array.length, String.length and Function.prototype LoadICs on x64.
+        (issue 2568)
+
+        ES6 symbols: filter symbols form for-in loops and Object.keys.
+        (issue 2158)
+
+        Properly handle misses for StoreArrayLengthStub on ia32 and x64
+        (issue 2566)
+
+        Fixed x32 handling of Atomic64. (Chromium issue chromium-os:36866)
+
+        Removed "library" variable from standalone.gypi. (Chromium issue 111541)
+
+        Fixed HCheckSmiOrInt <-> HBoundsCheck interaction wrt. representations.
+        (issue 2556)
+
+        Enabled zapping of disposed global handles in release mode.
+        (Chromium issue 176056)
+
+        Added workaround for redefinition of __proto__ property. (issue 2565)
+
+        ES6 symbols: Allow symbols as property names. (issue 2158)
+
+        Performance and stability improvements on all platforms.
+
+
+2013-03-04: Version 3.17.7
+
+        Limited recursion in regexp compilation by a budget.
+        (Chromium issue 178790)
+
+        ES6 symbols: Implemented Symbol intrinsic and basic functionality
+        (issue 2158)
+
+        Performance and stability improvements on all platforms.
+
+
 2013-02-28: Version 3.17.6
 
         Fixed materialization of arguments objects with unknown values.
