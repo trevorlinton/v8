@@ -25,16 +25,15 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-#ifndef V8_BUILTINS_DECLS_H_
-#define V8_BUILTINS_DECLS_H_
+// Flags: --allow-natives-syntax
 
-#include "arguments.h"
-
-namespace v8 {
-namespace internal {
-
-DECLARE_RUNTIME_FUNCTION(MaybeObject*, ArrayConstructor_StubFailure);
-
-} }  // namespace v8::internal
-
-#endif  // V8_BUILTINS_DECLS_H_
+function f1(a, i) {
+  return a[i] + 0.5;
+}
+var arr = [0.0,,2.5];
+assertEquals(0.5, f1(arr, 0));
+assertEquals(0.5, f1(arr, 0));
+%OptimizeFunctionOnNextCall(f1);
+assertEquals(0.5, f1(arr, 0));
+Array.prototype.__proto__[1] = 1.5;
+assertEquals(2, f1(arr, 1));

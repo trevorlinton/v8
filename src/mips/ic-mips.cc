@@ -646,15 +646,11 @@ void KeyedCallIC::GenerateNormal(MacroAssembler* masm, int argc) {
 }
 
 
-// Defined in ic.cc.
-Object* LoadIC_Miss(Arguments args);
-
 void LoadIC::GenerateMegamorphic(MacroAssembler* masm) {
   // ----------- S t a t e -------------
   //  -- a2    : name
   //  -- ra    : return address
   //  -- a0    : receiver
-  //  -- sp[0] : receiver
   // -----------------------------------
 
   // Probe the stub cache.
@@ -674,7 +670,6 @@ void LoadIC::GenerateNormal(MacroAssembler* masm) {
   //  -- a2    : name
   //  -- lr    : return address
   //  -- a0    : receiver
-  //  -- sp[0] : receiver
   // -----------------------------------
   Label miss;
 
@@ -695,7 +690,6 @@ void LoadIC::GenerateMiss(MacroAssembler* masm) {
   //  -- a2    : name
   //  -- ra    : return address
   //  -- a0    : receiver
-  //  -- sp[0] : receiver
   // -----------------------------------
   Isolate* isolate = masm->isolate();
 
@@ -707,6 +701,20 @@ void LoadIC::GenerateMiss(MacroAssembler* masm) {
   // Perform tail call to the entry.
   ExternalReference ref = ExternalReference(IC_Utility(kLoadIC_Miss), isolate);
   __ TailCallExternalReference(ref, 2, 1);
+}
+
+
+void LoadIC::GenerateRuntimeGetProperty(MacroAssembler* masm) {
+  // ---------- S t a t e --------------
+  //  -- a2    : name
+  //  -- ra    : return address
+  //  -- a0    : receiver
+  // -----------------------------------
+
+  __ mov(a3, a0);
+  __ Push(a3, a2);
+
+  __ TailCallRuntime(Runtime::kGetProperty, 2, 1);
 }
 
 
@@ -881,9 +889,6 @@ void KeyedCallIC::GenerateNonStrictArguments(MacroAssembler* masm,
   __ bind(&slow);
   GenerateMiss(masm, argc);
 }
-
-
-Object* KeyedLoadIC_Miss(Arguments args);
 
 
 void KeyedLoadIC::GenerateMiss(MacroAssembler* masm, ICMissMode miss_mode) {
@@ -1440,6 +1445,25 @@ void KeyedStoreIC::GenerateMiss(MacroAssembler* masm, ICMissMode miss_mode) {
 }
 
 
+void StoreIC::GenerateSlow(MacroAssembler* masm) {
+  // ---------- S t a t e --------------
+  //  -- a0     : value
+  //  -- a2     : key
+  //  -- a1     : receiver
+  //  -- ra     : return address
+  // -----------------------------------
+
+  // Push receiver, key and value for runtime call.
+  __ Push(a1, a2, a0);
+
+  // The slow case calls into the runtime to complete the store without causing
+  // an IC miss that would otherwise cause a transition to the generic stub.
+  ExternalReference ref =
+      ExternalReference(IC_Utility(kStoreIC_Slow), masm->isolate());
+  __ TailCallExternalReference(ref, 3, 1);
+}
+
+
 void KeyedStoreIC::GenerateSlow(MacroAssembler* masm) {
   // ---------- S t a t e --------------
   //  -- a0     : value
@@ -1564,8 +1588,8 @@ void StoreIC::GenerateNormal(MacroAssembler* masm) {
 }
 
 
-void StoreIC::GenerateGlobalProxy(MacroAssembler* masm,
-                                  StrictModeFlag strict_mode) {
+void StoreIC::GenerateRuntimeSetProperty(MacroAssembler* masm,
+                                         StrictModeFlag strict_mode) {
   // ----------- S t a t e -------------
   //  -- a0    : value
   //  -- a1    : receiver

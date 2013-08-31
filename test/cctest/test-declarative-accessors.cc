@@ -120,8 +120,8 @@ static void VerifyRead(v8::Handle<v8::DeclaredAccessorDescriptor> descriptor,
   CreateConstructor(context, "Accessible", internal_field, "x", descriptor);
   // Setup object.
   CompileRun("var accessible = new Accessible();");
-  v8::Local<v8::Object> obj(
-      v8::Object::Cast(*context->Global()->Get(v8_str("accessible"))));
+  v8::Local<v8::Object> obj = v8::Local<v8::Object>::Cast(
+      context->Global()->Get(v8_str("accessible")));
   obj->SetAlignedPointerInInternalField(internal_field, internal_object);
   bool added_accessor;
   added_accessor = obj->SetAccessor(v8_str("y"), descriptor);
@@ -295,7 +295,6 @@ TEST(HandleDereferenceRead) {
       ->NewHandleDereference(helper.isolate_);
   HandleArray* array = *helper.handle_array_;
   v8::Handle<v8::String> expected = v8_str("whatever");
-  array->handles_[index] = v8::Persistent<v8::Value>::New(helper.isolate_,
-                                                          expected);
+  array->handles_[index].Reset(helper.isolate_, expected);
   VerifyRead(descriptor, internal_field, array, expected);
 }

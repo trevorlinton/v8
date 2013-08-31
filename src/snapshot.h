@@ -77,12 +77,14 @@ class Snapshot {
   static int code_space_used_;
   static int map_space_used_;
   static int cell_space_used_;
+  static int property_cell_space_used_;
   static int context_new_space_used_;
   static int context_pointer_space_used_;
   static int context_data_space_used_;
   static int context_code_space_used_;
   static int context_map_space_used_;
   static int context_cell_space_used_;
+  static int context_property_cell_space_used_;
   static const int size_;
   static const int raw_size_;
   static int context_size_;
@@ -100,6 +102,7 @@ struct NWSnapshotHeader {
   int code_space_used;
   int map_space_used;
   int cell_space_used;
+  int property_space_used;
   int size;
 };
 

@@ -95,8 +95,8 @@ static Handle<Object> Test() {
 
 
 TEST(StressHandles) {
-  v8::Persistent<v8::Context> env = v8::Context::New();
-  v8::HandleScope scope(env->GetIsolate());
+  v8::HandleScope scope(v8::Isolate::GetCurrent());
+  v8::Handle<v8::Context> env = v8::Context::New(v8::Isolate::GetCurrent());
   env->Enter();
   Handle<Object> o = Test();
   CHECK(o->IsSmi() && Smi::cast(*o)->value() == 42);
@@ -117,33 +117,34 @@ const AccessorDescriptor kDescriptor = {
 
 
 TEST(StressJS) {
-  v8::Persistent<v8::Context> env = v8::Context::New();
-  v8::HandleScope scope(env->GetIsolate());
+  Isolate* isolate = Isolate::Current();
+  Factory* factory = isolate->factory();
+  v8::HandleScope scope(v8::Isolate::GetCurrent());
+  v8::Handle<v8::Context> env = v8::Context::New(v8::Isolate::GetCurrent());
   env->Enter();
   Handle<JSFunction> function =
-      FACTORY->NewFunction(FACTORY->function_string(), FACTORY->null_value());
+      factory->NewFunction(factory->function_string(), factory->null_value());
   // Force the creation of an initial map and set the code to
   // something empty.
-  FACTORY->NewJSObject(function);
+  factory->NewJSObject(function);
   function->ReplaceCode(Isolate::Current()->builtins()->builtin(
       Builtins::kEmptyFunction));
   // Patch the map to have an accessor for "get".
   Handle<Map> map(function->initial_map());
   Handle<DescriptorArray> instance_descriptors(map->instance_descriptors());
-  Handle<Foreign> foreign = FACTORY->NewForeign(&kDescriptor);
+  Handle<Foreign> foreign = factory->NewForeign(&kDescriptor);
   Handle<String> name =
-      FACTORY->NewStringFromAscii(Vector<const char>("get", 3));
+      factory->NewStringFromAscii(Vector<const char>("get", 3));
   ASSERT(instance_descriptors->IsEmpty());
 
-  Handle<DescriptorArray> new_descriptors = FACTORY->NewDescriptorArray(0, 1);
+  Handle<DescriptorArray> new_descriptors = factory->NewDescriptorArray(0, 1);
 
   v8::internal::DescriptorArray::WhitenessWitness witness(*new_descriptors);
   map->set_instance_descriptors(*new_descriptors);
 
   CallbacksDescriptor d(*name,
                         *foreign,
-                        static_cast<PropertyAttributes>(0),
-                        v8::internal::PropertyDetails::kInitialIndex);
+                        static_cast<PropertyAttributes>(0));
   map->AppendDescriptor(&d, witness);
 
   // Add the Foo constructor the global object.
