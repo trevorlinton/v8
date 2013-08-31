@@ -45,6 +45,8 @@ static void ReserveSpaceForSnapshot(Deserializer* deserializer,
   deserializer->set_reservation(CODE_SPACE,        header->code_space_used);
   deserializer->set_reservation(MAP_SPACE,         header->map_space_used);
   deserializer->set_reservation(CELL_SPACE,        header->cell_space_used);
+  deserializer->set_reservation(PROPERTY_CELL_SPACE,
+                                header->property_space_used);
 }
 
 
@@ -55,6 +57,8 @@ void Snapshot::ReserveSpaceForLinkedInSnapshot(Deserializer* deserializer) {
   deserializer->set_reservation(CODE_SPACE, code_space_used_);
   deserializer->set_reservation(MAP_SPACE, map_space_used_);
   deserializer->set_reservation(CELL_SPACE, cell_space_used_);
+  deserializer->set_reservation(PROPERTY_CELL_SPACE,
+                                property_cell_space_used_);
 }
 
 
@@ -161,6 +165,8 @@ Handle<Context> Snapshot::NewContextFromSnapshot() {
   deserializer.set_reservation(CODE_SPACE, context_code_space_used_);
   deserializer.set_reservation(MAP_SPACE, context_map_space_used_);
   deserializer.set_reservation(CELL_SPACE, context_cell_space_used_);
+  deserializer.set_reservation(PROPERTY_CELL_SPACE,
+                               context_property_cell_space_used_);
   deserializer.DeserializePartial(&root);
   CHECK(root->IsContext());
   return Handle<Context>(Context::cast(root));

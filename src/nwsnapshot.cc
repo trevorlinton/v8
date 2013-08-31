@@ -165,7 +165,8 @@ class FileByteSink : public i::SnapshotByteSink {
       int data_space_used,
       int code_space_used,
       int map_space_used,
-      int cell_space_used);
+      int cell_space_used,
+      int property_cell_space_used_);
 
  private:
   i::NWSnapshotHeader header_;
@@ -180,7 +181,8 @@ void FileByteSink::WriteSpaceUsed(
       int data_space_used,
       int code_space_used,
       int map_space_used,
-      int cell_space_used) {
+      int cell_space_used,
+      int property_space_used) {
   int size = ftell(fp_) - sizeof(header_);
   fseek(fp_, 0, SEEK_SET);
 
@@ -192,6 +194,7 @@ void FileByteSink::WriteSpaceUsed(
   header_.code_space_used     = code_space_used;
   header_.map_space_used      = map_space_used;
   header_.cell_space_used     = cell_space_used;
+  header_.property_space_used = property_space_used;
 
   fwrite(&header_, sizeof(header_), 1, fp_);
 }
@@ -209,17 +212,22 @@ int main(int argc, char** argv) {
     return !i::FLAG_help;
   }
   i::Serializer::Enable();
-  Persistent<Context> context = v8::Context::New();
+  Isolate* isolate = Isolate::GetCurrent();
+  Persistent<Context> context;
+  {
+    HandleScope handle_scope(isolate);
+    context.Reset(isolate, Context::New(isolate));
+  }
   if (context.IsEmpty()) {
     fprintf(stderr,
             "\nException thrown while compiling natives - see above.\n\n");
     exit(1);
   }
   if (i::FLAG_extra_code != NULL) {
-    context->Enter();
     // Capture 100 frames if anything happens.
     V8::SetCaptureStackTraceForUncaughtExceptions(true, 100);
-    HandleScope scope;
+    HandleScope scope(isolate);
+    v8::Context::Scope scope2(v8::Local<v8::Context>::New(isolate, context));
     const char* name = i::FLAG_extra_code;
     FILE* file = i::OS::FOpen(name, "rb");
     if (file == NULL) {
@@ -288,8 +296,6 @@ int main(int argc, char** argv) {
       i::Handle<i::Script> iscript(i::Script::cast(function_info->script()));
       iscript->set_source(isolate->heap()->undefined_value());
     }
-
-    context->Exit();
   }
   // Make sure all builtin scripts are cached.
   { HandleScope scope;
@@ -300,7 +306,7 @@ int main(int argc, char** argv) {
   // If we don't do this then we end up with a stray root pointing at the
   // context even after we have disposed of the context.
   HEAP->CollectAllGarbage(i::Heap::kNoGCFlags, "mksnapshot");
-  i::Object* raw_context = *(v8::Utils::OpenHandle(*context));
+  i::Object* raw_context = *v8::Utils::OpenPersistent(context);
   context.Dispose();
 
   std::string partial_file(argv[1]);
@@ -327,7 +333,8 @@ int main(int argc, char** argv) {
                                 p_ser.CurrentAllocationAddress(i::OLD_DATA_SPACE),
                                 p_ser.CurrentAllocationAddress(i::CODE_SPACE),
                                 p_ser.CurrentAllocationAddress(i::MAP_SPACE),
-                                p_ser.CurrentAllocationAddress(i::CELL_SPACE));
+                                p_ser.CurrentAllocationAddress(i::CELL_SPACE),
+                                p_ser.CurrentAllocationAddress(i::PROPERTY_CELL_SPACE));
 
     fprintf(stderr, "partial snapshot spaces: %d %d %d %d %d %d\n",
                                 p_ser.CurrentAllocationAddress(i::NEW_SPACE),
@@ -344,7 +351,8 @@ int main(int argc, char** argv) {
                                 startup_serializer.CurrentAllocationAddress(i::OLD_DATA_SPACE),
                                 startup_serializer.CurrentAllocationAddress(i::CODE_SPACE),
                                 startup_serializer.CurrentAllocationAddress(i::MAP_SPACE),
-                                startup_serializer.CurrentAllocationAddress(i::CELL_SPACE));
+                                startup_serializer.CurrentAllocationAddress(i::CELL_SPACE),
+                                startup_serializer.CurrentAllocationAddress(i::PROPERTY_CELL_SPACE));
     fprintf(stderr, "startup snapshot spaces: %d %d %d %d %d %d\n",
                                 startup_serializer.CurrentAllocationAddress(i::NEW_SPACE),
                                 startup_serializer.CurrentAllocationAddress(i::OLD_POINTER_SPACE),
