@@ -26,7 +26,11 @@
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 // Flags: --allow-natives-syntax
-%SetFlags("--noparallel-recompilation");
+
+if (%IsParallelRecompilationSupported()) {
+  print("Parallel recompilation is turned on after all. Skipping this test.");
+  quit();
+}
 
 /**
  * This class shows how to use %GetOptimizationCount() and

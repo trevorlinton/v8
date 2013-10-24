@@ -27,10 +27,11 @@
 
 #include "v8.h"
 
-#if defined(V8_TARGET_ARCH_IA32)
+#if V8_TARGET_ARCH_IA32
 
 #include "bootstrapper.h"
 #include "codegen.h"
+#include "cpu-profiler.h"
 #include "debug.h"
 #include "runtime.h"
 #include "serialize.h"
@@ -841,6 +842,7 @@ void MacroAssembler::LeaveExitFrame(bool save_doubles) {
   LeaveExitFrameEpilogue();
 }
 
+
 void MacroAssembler::LeaveExitFrameEpilogue() {
   // Restore current context from top and clear it in debug mode.
   ExternalReference context_address(Isolate::kContextAddress, isolate());
@@ -1246,6 +1248,7 @@ void MacroAssembler::Allocate(int object_size,
                               Label* gc_required,
                               AllocationFlags flags) {
   ASSERT((flags & (RESULT_CONTAINS_TOP | SIZE_IN_WORDS)) == 0);
+  ASSERT(object_size <= Page::kMaxNonCodeHeapObjectSize);
   if (!FLAG_inline_new) {
     if (emit_debug_code()) {
       // Trash the registers to simulate an allocation failure.
@@ -2796,7 +2799,8 @@ void MacroAssembler::JumpIfNotBothSequentialAsciiStrings(Register object1,
   // Check that both are flat ASCII strings.
   const int kFlatAsciiStringMask =
       kIsNotStringMask | kStringRepresentationMask | kStringEncodingMask;
-  const int kFlatAsciiStringTag = ASCII_STRING_TYPE;
+  const int kFlatAsciiStringTag =
+      kStringTag | kOneByteStringTag | kSeqStringTag;
   // Interleave bits from both instance types and compare them in one check.
   ASSERT_EQ(0, kFlatAsciiStringMask & (kFlatAsciiStringMask << 3));
   and_(scratch1, kFlatAsciiStringMask);
@@ -2804,6 +2808,20 @@ void MacroAssembler::JumpIfNotBothSequentialAsciiStrings(Register object1,
   lea(scratch1, Operand(scratch1, scratch2, times_8, 0));
   cmp(scratch1, kFlatAsciiStringTag | (kFlatAsciiStringTag << 3));
   j(not_equal, failure);
+}
+
+
+void MacroAssembler::JumpIfNotUniqueName(Operand operand,
+                                         Label* not_unique_name,
+                                         Label::Distance distance) {
+  STATIC_ASSERT(kInternalizedTag == 0 && kStringTag == 0);
+  Label succeed;
+  test(operand, Immediate(kIsNotStringMask | kIsNotInternalizedMask));
+  j(zero, &succeed);
+  cmpb(operand, static_cast<uint8_t>(SYMBOL_TYPE));
+  j(not_equal, not_unique_name, distance);
+
+  bind(&succeed);
 }
 
 
@@ -3150,10 +3168,10 @@ void MacroAssembler::CheckEnumCache(Label* call_runtime) {
 }
 
 
-void MacroAssembler::TestJSArrayForAllocationSiteInfo(
+void MacroAssembler::TestJSArrayForAllocationMemento(
     Register receiver_reg,
     Register scratch_reg) {
-  Label no_info_available;
+  Label no_memento_available;
 
   ExternalReference new_space_start =
       ExternalReference::new_space_start(isolate());
@@ -3161,14 +3179,14 @@ void MacroAssembler::TestJSArrayForAllocationSiteInfo(
       ExternalReference::new_space_allocation_top_address(isolate());
 
   lea(scratch_reg, Operand(receiver_reg,
-      JSArray::kSize + AllocationSiteInfo::kSize - kHeapObjectTag));
+      JSArray::kSize + AllocationMemento::kSize - kHeapObjectTag));
   cmp(scratch_reg, Immediate(new_space_start));
-  j(less, &no_info_available);
+  j(less, &no_memento_available);
   cmp(scratch_reg, Operand::StaticVariable(new_space_allocation_top));
-  j(greater, &no_info_available);
-  cmp(MemOperand(scratch_reg, -AllocationSiteInfo::kSize),
-      Immediate(Handle<Map>(isolate()->heap()->allocation_site_info_map())));
-  bind(&no_info_available);
+  j(greater, &no_memento_available);
+  cmp(MemOperand(scratch_reg, -AllocationMemento::kSize),
+      Immediate(Handle<Map>(isolate()->heap()->allocation_memento_map())));
+  bind(&no_memento_available);
 }
 
 

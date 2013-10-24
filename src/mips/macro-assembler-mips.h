@@ -1406,6 +1406,8 @@ class MacroAssembler: public Assembler {
                                               Register scratch,
                                               Label* failure);
 
+  void JumpIfNotUniqueName(Register reg, Label* not_unique_name);
+
   // Test that both first and second are sequential ASCII strings.
   // Assume that they are non-smis.
   void JumpIfNonSmisNotBothSequentialAsciiStrings(Register first,
@@ -1458,16 +1460,16 @@ class MacroAssembler: public Assembler {
   // in a0.  Assumes that any other register can be used as a scratch.
   void CheckEnumCache(Register null_value, Label* call_runtime);
 
-  // AllocationSiteInfo support. Arrays may have an associated
-  // AllocationSiteInfo object that can be checked for in order to pretransition
+  // AllocationMemento support. Arrays may have an associated
+  // AllocationMemento object that can be checked for in order to pretransition
   // to another type.
   // On entry, receiver_reg should point to the array object.
   // scratch_reg gets clobbered.
   // If allocation info is present, jump to allocation_info_present
-  void TestJSArrayForAllocationSiteInfo(Register receiver_reg,
-                                        Register scratch_reg,
-                                        Condition cond,
-                                        Label* allocation_info_present);
+  void TestJSArrayForAllocationMemento(Register receiver_reg,
+                                       Register scratch_reg,
+                                       Condition cond,
+                                       Label* allocation_memento_present);
 
  private:
   void CallCFunctionHelper(Register function,

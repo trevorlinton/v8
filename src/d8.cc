@@ -457,16 +457,6 @@ void Shell::Write(const v8::FunctionCallbackInfo<v8::Value>& args) {
 }
 
 
-void Shell::EnableProfiler(const v8::FunctionCallbackInfo<v8::Value>& args) {
-  V8::ResumeProfiler();
-}
-
-
-void Shell::DisableProfiler(const v8::FunctionCallbackInfo<v8::Value>& args) {
-  V8::PauseProfiler();
-}
-
-
 void Shell::Read(const v8::FunctionCallbackInfo<v8::Value>& args) {
   String::Utf8Value file(args[0]);
   if (*file == NULL) {
@@ -810,7 +800,7 @@ void Shell::InstallUtilityScript(Isolate* isolate) {
 #ifdef ENABLE_DEBUGGER_SUPPORT
   // Start the in-process debugger if requested.
   if (i::FLAG_debugger && !i::FLAG_debugger_agent) {
-    v8::Debug::SetDebugEventListener(HandleDebugEvent);
+    v8::Debug::SetDebugEventListener2(HandleDebugEvent);
   }
 #endif  // ENABLE_DEBUGGER_SUPPORT
 }
@@ -857,10 +847,6 @@ Handle<ObjectTemplate> Shell::CreateGlobalTemplate(Isolate* isolate) {
   global_template->Set(String::New("load"), FunctionTemplate::New(Load));
   global_template->Set(String::New("quit"), FunctionTemplate::New(Quit));
   global_template->Set(String::New("version"), FunctionTemplate::New(Version));
-  global_template->Set(String::New("enableProfiler"),
-                       FunctionTemplate::New(EnableProfiler));
-  global_template->Set(String::New("disableProfiler"),
-                       FunctionTemplate::New(DisableProfiler));
 
   // Bind the Realm object.
   Handle<ObjectTemplate> realm_template = ObjectTemplate::New();
@@ -1087,6 +1073,7 @@ static void ReadBufferWeakCallback(v8::Isolate* isolate,
   array_buffer->Dispose();
 }
 
+
 void Shell::ReadBuffer(const v8::FunctionCallbackInfo<v8::Value>& args) {
   ASSERT(sizeof(char) == sizeof(uint8_t));  // NOLINT
   String::Utf8Value filename(args[0]);
@@ -1105,7 +1092,7 @@ void Shell::ReadBuffer(const v8::FunctionCallbackInfo<v8::Value>& args) {
   }
   Handle<v8::ArrayBuffer> buffer = ArrayBuffer::New(data, length);
   v8::Persistent<v8::ArrayBuffer> weak_handle(isolate, buffer);
-  weak_handle.MakeWeak(isolate, data, ReadBufferWeakCallback);
+  weak_handle.MakeWeak(data, ReadBufferWeakCallback);
   weak_handle.MarkIndependent();
   isolate->AdjustAmountOfExternalAllocatedMemory(length);
 
@@ -1560,11 +1547,12 @@ int Shell::RunMain(Isolate* isolate, int argc, char* argv[]) {
 
 
 #ifdef V8_SHARED
-static void EnableHarmonyTypedArraysViaCommandLine() {
-  int fake_argc = 2;
-  char **fake_argv = new char*[2];
+static void SetStandaloneFlagsViaCommandLine() {
+  int fake_argc = 3;
+  char **fake_argv = new char*[3];
   fake_argv[0] = NULL;
   fake_argv[1] = strdup("--harmony-typed-arrays");
+  fake_argv[2] = strdup("--trace-hydrogen-file=hydrogen.cfg");
   v8::V8::SetFlagsFromCommandLine(&fake_argc, fake_argv, false);
   free(fake_argv[1]);
   delete[] fake_argv;
@@ -1574,18 +1562,33 @@ static void EnableHarmonyTypedArraysViaCommandLine() {
 
 class ShellArrayBufferAllocator : public v8::ArrayBuffer::Allocator {
  public:
-  virtual void* Allocate(size_t length) { return malloc(length); }
-  virtual void Free(void* data) { free(data); }
+  virtual void* Allocate(size_t length) {
+    void* result = malloc(length);
+    memset(result, 0, length);
+    return result;
+  }
+  virtual void* AllocateUninitialized(size_t length) {
+    return malloc(length);
+  }
+  virtual void Free(void* data, size_t) { free(data); }
+  // TODO(dslomov): Remove when v8:2823 is fixed.
+  virtual void Free(void* data) {
+#ifndef V8_SHARED
+    UNREACHABLE();
+#endif
+  }
 };
 
 
 int Shell::Main(int argc, char* argv[]) {
   if (!SetOptions(argc, argv)) return 1;
+  v8::V8::InitializeICU();
 #ifndef V8_SHARED
   i::FLAG_harmony_array_buffer = true;
   i::FLAG_harmony_typed_arrays = true;
+  i::FLAG_trace_hydrogen_file = "hydrogen.cfg";
 #else
-  EnableHarmonyTypedArraysViaCommandLine();
+  SetStandaloneFlagsViaCommandLine();
 #endif
   ShellArrayBufferAllocator array_buffer_allocator;
   v8::V8::SetArrayBufferAllocator(&array_buffer_allocator);

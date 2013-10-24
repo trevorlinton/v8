@@ -758,6 +758,12 @@ class MacroAssembler: public Assembler {
       Label* on_fail,
       Label::Distance near_jump = Label::kFar);
 
+  // Checks if the given register or operand is a unique name
+  void JumpIfNotUniqueName(Register reg, Label* not_unique_name,
+                           Label::Distance distance = Label::kFar);
+  void JumpIfNotUniqueName(Operand operand, Label* not_unique_name,
+                           Label::Distance distance = Label::kFar);
+
   // ---------------------------------------------------------------------------
   // Macro instructions.
 
@@ -1246,7 +1252,7 @@ class MacroAssembler: public Assembler {
                                 int return_value_offset_from_rbp);
 
   // Before calling a C-function from generated code, align arguments on stack.
-  // After aligning the frame, arguments must be stored in esp[0], esp[4],
+  // After aligning the frame, arguments must be stored in rsp[0], rsp[8],
   // etc., not pushed. The argument count assumes all arguments are word sized.
   // The number of slots reserved for arguments depends on platform. On Windows
   // stack slots are reserved for the arguments passed in registers. On other
@@ -1348,14 +1354,14 @@ class MacroAssembler: public Assembler {
   void CheckEnumCache(Register null_value,
                       Label* call_runtime);
 
-  // AllocationSiteInfo support. Arrays may have an associated
-  // AllocationSiteInfo object that can be checked for in order to pretransition
+  // AllocationMemento support. Arrays may have an associated
+  // AllocationMemento object that can be checked for in order to pretransition
   // to another type.
   // On entry, receiver_reg should point to the array object.
   // scratch_reg gets clobbered.
   // If allocation info is present, condition flags are set to equal
-  void TestJSArrayForAllocationSiteInfo(Register receiver_reg,
-                                        Register scratch_reg);
+  void TestJSArrayForAllocationMemento(Register receiver_reg,
+                                       Register scratch_reg);
 
  private:
   // Order general registers are pushed by Pushad.
@@ -1511,6 +1517,10 @@ inline Operand StackSpaceOperand(int index) {
 #endif
 }
 
+
+inline Operand StackOperandForReturnAddress(int32_t disp) {
+  return Operand(rsp, disp);
+}
 
 
 #ifdef GENERATED_CODE_COVERAGE

@@ -27,10 +27,11 @@
 
 #include "v8.h"
 
-#if defined(V8_TARGET_ARCH_X64)
+#if V8_TARGET_ARCH_X64
 
 #include "bootstrapper.h"
 #include "codegen.h"
+#include "cpu-profiler.h"
 #include "assembler-x64.h"
 #include "macro-assembler-x64.h"
 #include "serialize.h"
@@ -645,8 +646,8 @@ void MacroAssembler::TailCallExternalReference(const ExternalReference& ext,
                                                int num_arguments,
                                                int result_size) {
   // ----------- S t a t e -------------
-  //  -- rsp[0] : return address
-  //  -- rsp[8] : argument num_arguments - 1
+  //  -- rsp[0]                 : return address
+  //  -- rsp[8]                 : argument num_arguments - 1
   //  ...
   //  -- rsp[8 * num_arguments] : argument 0 (receiver)
   // -----------------------------------
@@ -971,6 +972,7 @@ void MacroAssembler::Set(Register dst, int64_t x) {
   }
 }
 
+
 void MacroAssembler::Set(const Operand& dst, int64_t x) {
   if (is_int32(x)) {
     movq(dst, Immediate(static_cast<int32_t>(x)));
@@ -1027,6 +1029,7 @@ Register MacroAssembler::GetSmiConstant(Smi* source) {
   LoadSmiConstant(kScratchRegister, source);
   return kScratchRegister;
 }
+
 
 void MacroAssembler::LoadSmiConstant(Register dst, Smi* source) {
   if (emit_debug_code()) {
@@ -1155,6 +1158,7 @@ void MacroAssembler::SmiToInteger64(Register dst, const Operand& src) {
 
 
 void MacroAssembler::SmiTest(Register src) {
+  AssertSmi(src);
   testq(src, src);
 }
 
@@ -2249,7 +2253,8 @@ void MacroAssembler::JumpIfNotBothSequentialAsciiStrings(
   ASSERT(kNotStringTag != 0);
   const int kFlatAsciiStringMask =
       kIsNotStringMask | kStringRepresentationMask | kStringEncodingMask;
-  const int kFlatAsciiStringTag = ASCII_STRING_TYPE;
+  const int kFlatAsciiStringTag =
+      kStringTag | kOneByteStringTag | kSeqStringTag;
 
   andl(scratch1, Immediate(kFlatAsciiStringMask));
   andl(scratch2, Immediate(kFlatAsciiStringMask));
@@ -2295,7 +2300,8 @@ void MacroAssembler::JumpIfBothInstanceTypesAreNotSequentialAscii(
   ASSERT(kNotStringTag != 0);
   const int kFlatAsciiStringMask =
       kIsNotStringMask | kStringRepresentationMask | kStringEncodingMask;
-  const int kFlatAsciiStringTag = ASCII_STRING_TYPE;
+  const int kFlatAsciiStringTag =
+      kStringTag | kOneByteStringTag | kSeqStringTag;
 
   andl(scratch1, Immediate(kFlatAsciiStringMask));
   andl(scratch2, Immediate(kFlatAsciiStringMask));
@@ -2307,6 +2313,36 @@ void MacroAssembler::JumpIfBothInstanceTypesAreNotSequentialAscii(
   j(not_equal, on_fail, near_jump);
 }
 
+
+template<class T>
+static void JumpIfNotUniqueNameHelper(MacroAssembler* masm,
+                                      T operand_or_register,
+                                      Label* not_unique_name,
+                                      Label::Distance distance) {
+  STATIC_ASSERT(kInternalizedTag == 0 && kStringTag == 0);
+  Label succeed;
+  masm->testb(operand_or_register,
+              Immediate(kIsNotStringMask | kIsNotInternalizedMask));
+  masm->j(zero, &succeed, Label::kNear);
+  masm->cmpb(operand_or_register, Immediate(static_cast<uint8_t>(SYMBOL_TYPE)));
+  masm->j(not_equal, not_unique_name, distance);
+
+  masm->bind(&succeed);
+}
+
+
+void MacroAssembler::JumpIfNotUniqueName(Operand operand,
+                                         Label* not_unique_name,
+                                         Label::Distance distance) {
+  JumpIfNotUniqueNameHelper<Operand>(this, operand, not_unique_name, distance);
+}
+
+
+void MacroAssembler::JumpIfNotUniqueName(Register reg,
+                                         Label* not_unique_name,
+                                         Label::Distance distance) {
+  JumpIfNotUniqueNameHelper<Register>(this, reg, not_unique_name, distance);
+}
 
 
 void MacroAssembler::Move(Register dst, Register src) {
@@ -2661,7 +2697,8 @@ void MacroAssembler::JumpToHandlerEntry() {
   // rax = exception, rdi = code object, rdx = state.
   movq(rbx, FieldOperand(rdi, Code::kHandlerTableOffset));
   shr(rdx, Immediate(StackHandler::kKindWidth));
-  movq(rdx, FieldOperand(rbx, rdx, times_8, FixedArray::kHeaderSize));
+  movq(rdx,
+       FieldOperand(rbx, rdx, times_pointer_size, FixedArray::kHeaderSize));
   SmiToInteger64(rdx, rdx);
   lea(rdi, FieldOperand(rdi, rdx, times_1, Code::kHeaderSize));
   jmp(rdi);
@@ -3801,6 +3838,7 @@ void MacroAssembler::Allocate(int object_size,
                               Label* gc_required,
                               AllocationFlags flags) {
   ASSERT((flags & (RESULT_CONTAINS_TOP | SIZE_IN_WORDS)) == 0);
+  ASSERT(object_size <= Page::kMaxNonCodeHeapObjectSize);
   if (!FLAG_inline_new) {
     if (emit_debug_code()) {
       // Trash the registers to simulate an allocation failure.
@@ -3869,52 +3907,8 @@ void MacroAssembler::Allocate(int header_size,
                               Label* gc_required,
                               AllocationFlags flags) {
   ASSERT((flags & SIZE_IN_WORDS) == 0);
-  if (!FLAG_inline_new) {
-    if (emit_debug_code()) {
-      // Trash the registers to simulate an allocation failure.
-      movl(result, Immediate(0x7091));
-      movl(result_end, Immediate(0x7191));
-      if (scratch.is_valid()) {
-        movl(scratch, Immediate(0x7291));
-      }
-      // Register element_count is not modified by the function.
-    }
-    jmp(gc_required);
-    return;
-  }
-  ASSERT(!result.is(result_end));
-
-  // Load address of new object into result.
-  LoadAllocationTopHelper(result, scratch, flags);
-
-  // Align the next allocation. Storing the filler map without checking top is
-  // always safe because the limit of the heap is always aligned.
-  if (((flags & DOUBLE_ALIGNMENT) != 0) && FLAG_debug_code) {
-    testq(result, Immediate(kDoubleAlignmentMask));
-    Check(zero, "Allocation is not double aligned");
-  }
-
-  // Calculate new top and bail out if new space is exhausted.
-  ExternalReference allocation_limit =
-      AllocationUtils::GetAllocationLimitReference(isolate(), flags);
-
-  // We assume that element_count*element_size + header_size does not
-  // overflow.
   lea(result_end, Operand(element_count, element_size, header_size));
-  addq(result_end, result);
-  j(carry, gc_required);
-  Operand limit_operand = ExternalOperand(allocation_limit);
-  cmpq(result_end, limit_operand);
-  j(above, gc_required);
-
-  // Update allocation top.
-  UpdateAllocationTopHelper(result_end, scratch, flags);
-
-  // Tag the result if requested.
-  if ((flags & TAG_OBJECT) != 0) {
-    ASSERT(kHeapObjectTag == 1);
-    incq(result);
-  }
+  Allocate(result_end, result, result_end, scratch, gc_required, flags);
 }
 
 
@@ -3924,7 +3918,7 @@ void MacroAssembler::Allocate(Register object_size,
                               Register scratch,
                               Label* gc_required,
                               AllocationFlags flags) {
-  ASSERT((flags & (RESULT_CONTAINS_TOP | SIZE_IN_WORDS)) == 0);
+  ASSERT((flags & SIZE_IN_WORDS) == 0);
   if (!FLAG_inline_new) {
     if (emit_debug_code()) {
       // Trash the registers to simulate an allocation failure.
@@ -3943,6 +3937,13 @@ void MacroAssembler::Allocate(Register object_size,
   // Load address of new object into result.
   LoadAllocationTopHelper(result, scratch, flags);
 
+  // Align the next allocation. Storing the filler map without checking top is
+  // always safe because the limit of the heap is always aligned.
+  if (((flags & DOUBLE_ALIGNMENT) != 0) && FLAG_debug_code) {
+    testq(result, Immediate(kDoubleAlignmentMask));
+    Check(zero, "Allocation is not double aligned");
+  }
+
   // Calculate new top and bail out if new space is exhausted.
   ExternalReference allocation_limit =
       AllocationUtils::GetAllocationLimitReference(isolate(), flags);
@@ -3957,13 +3958,6 @@ void MacroAssembler::Allocate(Register object_size,
 
   // Update allocation top.
   UpdateAllocationTopHelper(result_end, scratch, flags);
-
-  // Align the next allocation. Storing the filler map without checking top is
-  // always safe because the limit of the heap is always aligned.
-  if (((flags & DOUBLE_ALIGNMENT) != 0) && FLAG_debug_code) {
-    testq(result, Immediate(kDoubleAlignmentMask));
-    Check(zero, "Allocation is not double aligned");
-  }
 
   // Tag the result if requested.
   if ((flags & TAG_OBJECT) != 0) {
@@ -4189,12 +4183,12 @@ void MacroAssembler::CopyBytes(Register destination,
   // we keep source aligned for the rep movs operation by copying the odd bytes
   // at the end of the ranges.
   movq(scratch, length);
-  shrl(length, Immediate(3));
+  shrl(length, Immediate(kPointerSizeLog2));
   repmovsq();
   // Move remaining bytes of length.
-  andl(scratch, Immediate(0x7));
-  movq(length, Operand(source, scratch, times_1, -8));
-  movq(Operand(destination, scratch, times_1, -8), length);
+  andl(scratch, Immediate(kPointerSize - 1));
+  movq(length, Operand(source, scratch, times_1, -kPointerSize));
+  movq(Operand(destination, scratch, times_1, -kPointerSize), length);
   addq(destination, scratch);
 
   if (min_length <= kLongStringLimit) {
@@ -4682,25 +4676,25 @@ void MacroAssembler::CheckEnumCache(Register null_value, Label* call_runtime) {
   j(not_equal, &next);
 }
 
-void MacroAssembler::TestJSArrayForAllocationSiteInfo(
+void MacroAssembler::TestJSArrayForAllocationMemento(
     Register receiver_reg,
     Register scratch_reg) {
-  Label no_info_available;
+  Label no_memento_available;
   ExternalReference new_space_start =
       ExternalReference::new_space_start(isolate());
   ExternalReference new_space_allocation_top =
       ExternalReference::new_space_allocation_top_address(isolate());
 
   lea(scratch_reg, Operand(receiver_reg,
-      JSArray::kSize + AllocationSiteInfo::kSize - kHeapObjectTag));
+      JSArray::kSize + AllocationMemento::kSize - kHeapObjectTag));
   movq(kScratchRegister, new_space_start);
   cmpq(scratch_reg, kScratchRegister);
-  j(less, &no_info_available);
+  j(less, &no_memento_available);
   cmpq(scratch_reg, ExternalOperand(new_space_allocation_top));
-  j(greater, &no_info_available);
-  CompareRoot(MemOperand(scratch_reg, -AllocationSiteInfo::kSize),
-              Heap::kAllocationSiteInfoMapRootIndex);
-  bind(&no_info_available);
+  j(greater, &no_memento_available);
+  CompareRoot(MemOperand(scratch_reg, -AllocationMemento::kSize),
+              Heap::kAllocationMementoMapRootIndex);
+  bind(&no_memento_available);
 }
 
 

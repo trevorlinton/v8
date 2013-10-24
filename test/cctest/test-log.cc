@@ -27,6 +27,7 @@
 //
 // Tests of logging functions from log.h
 
+#define V8_DISABLE_DEPRECATIONS 1
 #ifdef __linux__
 #include <pthread.h>
 #include <signal.h>
@@ -36,12 +37,14 @@
 
 #include "v8.h"
 #include "log.h"
+#include "log-utils.h"
 #include "cpu-profiler.h"
 #include "natives.h"
 #include "v8threads.h"
 #include "v8utils.h"
 #include "cctest.h"
 #include "vm-state-inl.h"
+#undef V8_DISABLE_DEPRECATIONS
 
 using v8::internal::Address;
 using v8::internal::EmbeddedVector;
@@ -57,7 +60,6 @@ class ScopedLoggerInitializer {
       : saved_log_(i::FLAG_log),
         saved_prof_lazy_(i::FLAG_prof_lazy),
         saved_prof_(i::FLAG_prof),
-        saved_prof_auto_(i::FLAG_prof_auto),
         temp_file_(NULL),
         // Need to run this prior to creating the scope.
         trick_to_run_init_flags_(init_flags_(prof_lazy)),
@@ -73,7 +75,6 @@ class ScopedLoggerInitializer {
     if (temp_file_ != NULL) fclose(temp_file_);
     i::FLAG_prof_lazy = saved_prof_lazy_;
     i::FLAG_prof = saved_prof_;
-    i::FLAG_prof_auto = saved_prof_auto_;
     i::FLAG_log = saved_log_;
   }
 
@@ -94,7 +95,6 @@ class ScopedLoggerInitializer {
     i::FLAG_log = true;
     i::FLAG_prof = true;
     i::FLAG_prof_lazy = prof_lazy;
-    i::FLAG_prof_auto = false;
     i::FLAG_logfile = i::Log::kLogToTemporaryFile;
     return prof_lazy;
   }
@@ -102,7 +102,6 @@ class ScopedLoggerInitializer {
   const bool saved_log_;
   const bool saved_prof_lazy_;
   const bool saved_prof_;
-  const bool saved_prof_auto_;
   FILE* temp_file_;
   const bool trick_to_run_init_flags_;
   v8::HandleScope scope_;
@@ -392,9 +391,9 @@ TEST(Issue23768) {
 }
 
 
-static v8::Handle<v8::Value> ObjMethod1(const v8::Arguments& args) {
-  return v8::Handle<v8::Value>();
+static void ObjMethod1(const v8::FunctionCallbackInfo<v8::Value>& args) {
 }
+
 
 TEST(LogCallbacks) {
   ScopedLoggerInitializer initialize_logger(false);
@@ -424,27 +423,26 @@ TEST(LogCallbacks) {
 
   i::EmbeddedVector<char, 100> ref_data;
   i::OS::SNPrintF(ref_data,
-                  "code-creation,Callback,-3,0x%" V8PRIxPTR ",1,\"method1\"\0",
+                  "code-creation,Callback,-2,0x%" V8PRIxPTR ",1,\"method1\"\0",
                   ObjMethod1);
 
   CHECK_NE(NULL, StrNStr(log.start(), ref_data.start(), log.length()));
 }
 
 
-static v8::Handle<v8::Value> Prop1Getter(v8::Local<v8::String> property,
-                                         const v8::AccessorInfo& info) {
-  return v8::Handle<v8::Value>();
+static void Prop1Getter(v8::Local<v8::String> property,
+                        const v8::PropertyCallbackInfo<v8::Value>& info) {
 }
 
 static void Prop1Setter(v8::Local<v8::String> property,
-                                         v8::Local<v8::Value> value,
-                                         const v8::AccessorInfo& info) {
+                        v8::Local<v8::Value> value,
+                        const v8::PropertyCallbackInfo<void>& info) {
 }
 
-static v8::Handle<v8::Value> Prop2Getter(v8::Local<v8::String> property,
-                                         const v8::AccessorInfo& info) {
-  return v8::Handle<v8::Value>();
+static void Prop2Getter(v8::Local<v8::String> property,
+                        const v8::PropertyCallbackInfo<v8::Value>& info) {
 }
+
 
 TEST(LogAccessorCallbacks) {
   ScopedLoggerInitializer initialize_logger(false);
@@ -467,21 +465,21 @@ TEST(LogAccessorCallbacks) {
 
   EmbeddedVector<char, 100> prop1_getter_record;
   i::OS::SNPrintF(prop1_getter_record,
-                  "code-creation,Callback,-3,0x%" V8PRIxPTR ",1,\"get prop1\"",
+                  "code-creation,Callback,-2,0x%" V8PRIxPTR ",1,\"get prop1\"",
                   Prop1Getter);
   CHECK_NE(NULL,
            StrNStr(log.start(), prop1_getter_record.start(), log.length()));
 
   EmbeddedVector<char, 100> prop1_setter_record;
   i::OS::SNPrintF(prop1_setter_record,
-                  "code-creation,Callback,-3,0x%" V8PRIxPTR ",1,\"set prop1\"",
+                  "code-creation,Callback,-2,0x%" V8PRIxPTR ",1,\"set prop1\"",
                   Prop1Setter);
   CHECK_NE(NULL,
            StrNStr(log.start(), prop1_setter_record.start(), log.length()));
 
   EmbeddedVector<char, 100> prop2_getter_record;
   i::OS::SNPrintF(prop2_getter_record,
-                  "code-creation,Callback,-3,0x%" V8PRIxPTR ",1,\"get prop2\"",
+                  "code-creation,Callback,-2,0x%" V8PRIxPTR ",1,\"get prop2\"",
                   Prop2Getter);
   CHECK_NE(NULL,
            StrNStr(log.start(), prop2_getter_record.start(), log.length()));

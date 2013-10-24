@@ -194,10 +194,6 @@ enum BuiltinExtraArguments {
                                     kStrictMode)                        \
   V(KeyedStoreIC_NonStrictArguments, KEYED_STORE_IC, MONOMORPHIC,       \
                                      Code::kNoExtraICState)             \
-  V(TransitionElementsSmiToDouble,  BUILTIN, UNINITIALIZED,             \
-                                    Code::kNoExtraICState)              \
-  V(TransitionElementsDoubleToObject, BUILTIN, UNINITIALIZED,           \
-                                      Code::kNoExtraICState)            \
                                                                         \
   /* Uses KeyedLoadIC_Initialize; must be after in list. */             \
   V(FunctionCall,                   BUILTIN, UNINITIALIZED,             \
@@ -208,8 +204,6 @@ enum BuiltinExtraArguments {
   V(InternalArrayCode,              BUILTIN, UNINITIALIZED,             \
                                     Code::kNoExtraICState)              \
   V(ArrayCode,                      BUILTIN, UNINITIALIZED,             \
-                                    Code::kNoExtraICState)              \
-  V(CommonArrayConstructCode,       BUILTIN, UNINITIALIZED,             \
                                     Code::kNoExtraICState)              \
                                                                         \
   V(StringConstructCode,            BUILTIN, UNINITIALIZED,             \
@@ -399,7 +393,6 @@ class Builtins {
 
   static void Generate_InternalArrayCode(MacroAssembler* masm);
   static void Generate_ArrayCode(MacroAssembler* masm);
-  static void Generate_CommonArrayConstructCode(MacroAssembler* masm);
 
   static void Generate_StringConstructCode(MacroAssembler* masm);
   static void Generate_OnStackReplacement(MacroAssembler* masm);

@@ -95,6 +95,7 @@ HeapSnapshot* HeapProfiler::TakeSnapshot(
   return TakeSnapshot(snapshots_->names()->GetName(name), control, resolver);
 }
 
+
 void HeapProfiler::StartHeapObjectsTracking() {
   snapshots_->StartHeapObjectsTracking();
 }
@@ -122,11 +123,6 @@ int HeapProfiler::GetSnapshotsCount() {
 
 HeapSnapshot* HeapProfiler::GetSnapshot(int index) {
   return snapshots_->snapshots()->at(index);
-}
-
-
-HeapSnapshot* HeapProfiler::FindSnapshot(unsigned uid) {
-  return snapshots_->GetSnapshot(uid);
 }
 
 

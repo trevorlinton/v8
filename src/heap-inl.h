@@ -495,10 +495,9 @@ void Heap::ScavengeObject(HeapObject** p, HeapObject* object) {
 
 MaybeObject* Heap::AllocateEmptyJSArrayWithAllocationSite(
       ElementsKind elements_kind,
-      Handle<Object> allocation_site_payload) {
+      Handle<AllocationSite> allocation_site) {
   return AllocateJSArrayAndStorageWithAllocationSite(elements_kind, 0, 0,
-      allocation_site_payload,
-      DONT_INITIALIZE_ARRAY_ELEMENTS);
+      allocation_site, DONT_INITIALIZE_ARRAY_ELEMENTS);
 }
 
 
@@ -550,7 +549,7 @@ intptr_t Heap::AdjustAmountOfExternalAllocatedMemory(
     if (amount >= 0) {
       amount_of_external_allocated_memory_ = amount;
     } else {
-      // Give up and reset the counters in case of an overflow.
+      // Give up and reset the counters in case of an underflow.
       amount_of_external_allocated_memory_ = 0;
       amount_of_external_allocated_memory_at_last_global_gc_ = 0;
     }
@@ -558,17 +557,15 @@ intptr_t Heap::AdjustAmountOfExternalAllocatedMemory(
   if (FLAG_trace_external_memory) {
     PrintPID("%8.0f ms: ", isolate()->time_millis_since_init());
     PrintF("Adjust amount of external memory: delta=%6" V8_PTR_PREFIX "d KB, "
-           " amount=%6" V8_PTR_PREFIX "d KB, isolate=0x%08" V8PRIxPTR ".\n",
-           change_in_bytes / 1024, amount_of_external_allocated_memory_ / 1024,
+           "amount=%6" V8_PTR_PREFIX "d KB, since_gc=%6" V8_PTR_PREFIX "d KB, "
+           "isolate=0x%08" V8PRIxPTR ".\n",
+           change_in_bytes / KB,
+           amount_of_external_allocated_memory_ / KB,
+           PromotedExternalMemorySize() / KB,
            reinterpret_cast<intptr_t>(isolate()));
   }
   ASSERT(amount_of_external_allocated_memory_ >= 0);
   return amount_of_external_allocated_memory_;
-}
-
-
-void Heap::SetLastScriptId(Object* last_script_id) {
-  roots_[kLastScriptIdRootIndex] = last_script_id;
 }
 
 
@@ -712,19 +709,6 @@ void ExternalStringTable::ShrinkNewStrings(int position) {
     Verify();
   }
 #endif
-}
-
-
-void ErrorObjectList::Add(JSObject* object) {
-  list_.Add(object);
-}
-
-
-void ErrorObjectList::Iterate(ObjectVisitor* v) {
-  if (!list_.is_empty()) {
-    Object** start = &list_[0];
-    v->VisitPointers(start, start + list_.length());
-  }
 }
 
 

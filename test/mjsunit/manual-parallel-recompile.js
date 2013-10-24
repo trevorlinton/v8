@@ -28,12 +28,9 @@
 // Flags: --allow-natives-syntax --expose-gc
 // Flags: --parallel-recompilation --parallel-recompilation-delay=50
 
-function assertUnoptimized(fun) {
-  assertTrue(%GetOptimizationStatus(fun) != 1);
-}
-
-function assertOptimized(fun) {
-  assertTrue(%GetOptimizationStatus(fun) != 2);
+if (!%IsParallelRecompilationSupported()) {
+  print("Parallel recompilation is disabled. Skipping this test.");
+  quit();
 }
 
 function f(x) {
@@ -60,13 +57,8 @@ assertUnoptimized(g);
 %OptimizeFunctionOnNextCall(g, "parallel");
 f(g(2));  // Trigger optimization.
 
-if (%IsParallelRecompilationSupported()) {
-  assertUnoptimized(f);  // Not yet optimized.
-  assertUnoptimized(g);
-}
+assertUnoptimized(f, "no sync");  // Not yet optimized while parallel thread
+assertUnoptimized(g, "no sync");  // is running.
 
-%CompleteOptimization(f);  // Wait till optimized code is installed.
-%CompleteOptimization(g);
-
-assertOptimized(f);  // Optimized now.
-assertOptimized(g);
+assertOptimized(f, "sync");  // Optimized once we sync with the parallel thread.
+assertOptimized(g, "sync");

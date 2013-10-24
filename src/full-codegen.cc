@@ -76,11 +76,14 @@ void BreakableStatementChecker::VisitExportDeclaration(
 void BreakableStatementChecker::VisitModuleLiteral(ModuleLiteral* module) {
 }
 
+
 void BreakableStatementChecker::VisitModuleVariable(ModuleVariable* module) {
 }
 
+
 void BreakableStatementChecker::VisitModulePath(ModulePath* module) {
 }
+
 
 void BreakableStatementChecker::VisitModuleUrl(ModuleUrl* module) {
 }
@@ -376,7 +379,7 @@ unsigned FullCodeGenerator::EmitBackEdgeTable() {
   for (unsigned i = 0; i < length; ++i) {
     __ dd(back_edges_[i].id.ToInt());
     __ dd(back_edges_[i].pc);
-    __ db(back_edges_[i].loop_depth);
+    __ dd(back_edges_[i].loop_depth);
   }
   return offset;
 }
@@ -937,6 +940,11 @@ void FullCodeGenerator::EmitGeneratorThrow(CallRuntime* expr) {
   ZoneList<Expression*>* args = expr->arguments();
   ASSERT(args->length() == 2);
   EmitGeneratorResume(args->at(0), args->at(1), JSGeneratorObject::THROW);
+}
+
+
+void FullCodeGenerator::EmitDebugBreakInOptimizedCode(CallRuntime* expr) {
+  context()->Plug(handle(Smi::FromInt(0), isolate()));
 }
 
 
@@ -1545,7 +1553,7 @@ void FullCodeGenerator::VisitConditional(Conditional* expr) {
 
 void FullCodeGenerator::VisitLiteral(Literal* expr) {
   Comment cmnt(masm_, "[ Literal");
-  context()->Plug(expr->handle());
+  context()->Plug(expr->value());
 }
 
 
@@ -1597,7 +1605,7 @@ bool FullCodeGenerator::TryLiteralCompare(CompareOperation* expr) {
     return true;
   }
 
-  if (expr->IsLiteralCompareUndefined(&sub_expr)) {
+  if (expr->IsLiteralCompareUndefined(&sub_expr, isolate())) {
     EmitLiteralCompareNil(expr, sub_expr, kUndefinedValue);
     return true;
   }

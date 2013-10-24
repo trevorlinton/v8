@@ -40,12 +40,6 @@ namespace internal {
 // Forward declarations.
 class LCodeGen;
 
-#define LITHIUM_ALL_INSTRUCTION_LIST(V)         \
-  V(ControlInstruction)                         \
-  V(Call)                                       \
-  LITHIUM_CONCRETE_INSTRUCTION_LIST(V)
-
-
 #define LITHIUM_CONCRETE_INSTRUCTION_LIST(V)    \
   V(AccessArgumentsAt)                          \
   V(AddI)                                       \
@@ -72,6 +66,7 @@ class LCodeGen;
   V(CheckFunction)                              \
   V(CheckInstanceType)                          \
   V(CheckMaps)                                  \
+  V(CheckMapValue)                              \
   V(CheckNonSmi)                                \
   V(CheckPrototypeMaps)                         \
   V(CheckSmi)                                   \
@@ -79,27 +74,28 @@ class LCodeGen;
   V(ClampIToUint8)                              \
   V(ClampTToUint8)                              \
   V(ClassOfTestAndBranch)                       \
-  V(CmpConstantEqAndBranch)                     \
-  V(CmpIDAndBranch)                             \
+  V(CompareNumericAndBranch)                    \
   V(CmpObjectEqAndBranch)                       \
   V(CmpMapAndBranch)                            \
   V(CmpT)                                       \
   V(ConstantD)                                  \
+  V(ConstantE)                                  \
   V(ConstantI)                                  \
   V(ConstantS)                                  \
   V(ConstantT)                                  \
   V(Context)                                    \
+  V(DateField)                                  \
   V(DebugBreak)                                 \
   V(DeclareGlobals)                             \
-  V(DeleteProperty)                             \
   V(Deoptimize)                                 \
   V(DivI)                                       \
   V(DoubleToI)                                  \
   V(DoubleToSmi)                                \
+  V(Drop)                                       \
   V(DummyUse)                                   \
   V(ElementsKind)                               \
-  V(FixedArrayBaseLength)                       \
-  V(MapEnumLength)                              \
+  V(ForInCacheArray)                            \
+  V(ForInPrepareMap)                            \
   V(FunctionLiteral)                            \
   V(GetCachedArrayIndex)                        \
   V(GlobalObject)                               \
@@ -107,24 +103,25 @@ class LCodeGen;
   V(Goto)                                       \
   V(HasCachedArrayIndexAndBranch)               \
   V(HasInstanceTypeAndBranch)                   \
-  V(In)                                         \
+  V(InnerAllocatedObject)                       \
   V(InstanceOf)                                 \
   V(InstanceOfKnownGlobal)                      \
   V(InstanceSize)                               \
   V(InstructionGap)                             \
   V(Integer32ToDouble)                          \
   V(Integer32ToSmi)                             \
-  V(Uint32ToDouble)                             \
   V(InvokeFunction)                             \
   V(IsConstructCallAndBranch)                   \
   V(IsObjectAndBranch)                          \
   V(IsStringAndBranch)                          \
   V(IsSmiAndBranch)                             \
+  V(IsNumberAndBranch)                          \
   V(IsUndetectableAndBranch)                    \
   V(Label)                                      \
   V(LazyBailout)                                \
   V(LoadContextSlot)                            \
   V(LoadExternalArrayPointer)                   \
+  V(LoadFieldByIndex)                           \
   V(LoadFunctionPrototype)                      \
   V(LoadGlobalCell)                             \
   V(LoadGlobalGeneric)                          \
@@ -133,6 +130,7 @@ class LCodeGen;
   V(LoadNamedField)                             \
   V(LoadNamedFieldPolymorphic)                  \
   V(LoadNamedGeneric)                           \
+  V(MapEnumLength)                              \
   V(MathAbs)                                    \
   V(MathCos)                                    \
   V(MathExp)                                    \
@@ -175,7 +173,6 @@ class LCodeGen;
   V(StringCharCodeAt)                           \
   V(StringCharFromCode)                         \
   V(StringCompareAndBranch)                     \
-  V(StringLength)                               \
   V(SubI)                                       \
   V(TaggedToI)                                  \
   V(ThisFunction)                               \
@@ -185,16 +182,10 @@ class LCodeGen;
   V(TrapAllocationMemento)                      \
   V(Typeof)                                     \
   V(TypeofIsAndBranch)                          \
+  V(Uint32ToDouble)                             \
   V(UnknownOSRValue)                            \
   V(ValueOf)                                    \
-  V(ForInPrepareMap)                            \
-  V(ForInCacheArray)                            \
-  V(CheckMapValue)                              \
-  V(LoadFieldByIndex)                           \
-  V(DateField)                                  \
-  V(WrapReceiver)                               \
-  V(Drop)                                       \
-  V(InnerAllocatedObject)
+  V(WrapReceiver)
 
 
 #define DECLARE_CONCRETE_INSTRUCTION(type, mnemonic)              \
@@ -274,7 +265,7 @@ class LInstruction: public ZoneObject {
   bool IsMarkedAsCall() const { return is_call_; }
 
   virtual bool HasResult() const = 0;
-  virtual LOperand* result() = 0;
+  virtual LOperand* result() const = 0;
 
   LOperand* FirstInput() { return InputAt(0); }
   LOperand* Output() { return HasResult() ? result() : NULL; }
@@ -310,9 +301,9 @@ class LTemplateInstruction: public LInstruction {
  public:
   // Allow 0 or 1 output operands.
   STATIC_ASSERT(R == 0 || R == 1);
-  virtual bool HasResult() const { return R != 0; }
+  virtual bool HasResult() const { return R != 0 && result() != NULL; }
   void set_result(LOperand* operand) { results_[0] = operand; }
-  LOperand* result() { return results_[0]; }
+  LOperand* result() const { return results_[0]; }
 
  protected:
   EmbeddedContainer<LOperand*, R> results_;
@@ -434,6 +425,7 @@ class LDummyUse: public LTemplateInstruction<1, 1, 0> {
 class LDeoptimize: public LTemplateInstruction<0, 0, 0> {
  public:
   DECLARE_CONCRETE_INSTRUCTION(Deoptimize, "deoptimize")
+  DECLARE_HYDROGEN_ACCESSOR(Deoptimize)
 };
 
 
@@ -489,17 +481,44 @@ class LUnknownOSRValue: public LTemplateInstruction<1, 0, 0> {
 template<int I, int T>
 class LControlInstruction: public LTemplateInstruction<0, I, T> {
  public:
+  LControlInstruction() : false_label_(NULL), true_label_(NULL) { }
+
   virtual bool IsControl() const { return true; }
 
   int SuccessorCount() { return hydrogen()->SuccessorCount(); }
   HBasicBlock* SuccessorAt(int i) { return hydrogen()->SuccessorAt(i); }
-  int true_block_id() { return hydrogen()->SuccessorAt(0)->block_id(); }
-  int false_block_id() { return hydrogen()->SuccessorAt(1)->block_id(); }
+
+  int TrueDestination(LChunk* chunk) {
+    return chunk->LookupDestination(true_block_id());
+  }
+  int FalseDestination(LChunk* chunk) {
+    return chunk->LookupDestination(false_block_id());
+  }
+
+  Label* TrueLabel(LChunk* chunk) {
+    if (true_label_ == NULL) {
+      true_label_ = chunk->GetAssemblyLabel(TrueDestination(chunk));
+    }
+    return true_label_;
+  }
+  Label* FalseLabel(LChunk* chunk) {
+    if (false_label_ == NULL) {
+      false_label_ = chunk->GetAssemblyLabel(FalseDestination(chunk));
+    }
+    return false_label_;
+  }
+
+ protected:
+  int true_block_id() { return SuccessorAt(0)->block_id(); }
+  int false_block_id() { return SuccessorAt(1)->block_id(); }
 
  private:
   HControlInstruction* hydrogen() {
     return HControlInstruction::cast(this->hydrogen_value());
   }
+
+  Label* false_label_;
+  Label* true_label_;
 };
 
 
@@ -645,9 +664,9 @@ class LMulI: public LTemplateInstruction<1, 2, 0> {
 };
 
 
-class LCmpIDAndBranch: public LControlInstruction<2, 0> {
+class LCompareNumericAndBranch: public LControlInstruction<2, 0> {
  public:
-  LCmpIDAndBranch(LOperand* left, LOperand* right) {
+  LCompareNumericAndBranch(LOperand* left, LOperand* right) {
     inputs_[0] = left;
     inputs_[1] = right;
   }
@@ -655,8 +674,9 @@ class LCmpIDAndBranch: public LControlInstruction<2, 0> {
   LOperand* left() { return inputs_[0]; }
   LOperand* right() { return inputs_[1]; }
 
-  DECLARE_CONCRETE_INSTRUCTION(CmpIDAndBranch, "cmp-id-and-branch")
-  DECLARE_HYDROGEN_ACCESSOR(CompareIDAndBranch)
+  DECLARE_CONCRETE_INSTRUCTION(CompareNumericAndBranch,
+                               "compare-numeric-and-branch")
+  DECLARE_HYDROGEN_ACCESSOR(CompareNumericAndBranch)
 
   Token::Value op() const { return hydrogen()->token(); }
   bool is_double() const {
@@ -810,20 +830,6 @@ class LCmpObjectEqAndBranch: public LControlInstruction<2, 0> {
 };
 
 
-class LCmpConstantEqAndBranch: public LControlInstruction<1, 0> {
- public:
-  explicit LCmpConstantEqAndBranch(LOperand* left) {
-    inputs_[0] = left;
-  }
-
-  LOperand* left() { return inputs_[0]; }
-
-  DECLARE_CONCRETE_INSTRUCTION(CmpConstantEqAndBranch,
-                               "cmp-constant-eq-and-branch")
-  DECLARE_HYDROGEN_ACCESSOR(CompareConstantEqAndBranch)
-};
-
-
 class LIsObjectAndBranch: public LControlInstruction<1, 0> {
  public:
   explicit LIsObjectAndBranch(LOperand* value) {
@@ -836,6 +842,19 @@ class LIsObjectAndBranch: public LControlInstruction<1, 0> {
   DECLARE_HYDROGEN_ACCESSOR(IsObjectAndBranch)
 
   virtual void PrintDataTo(StringStream* stream);
+};
+
+
+class LIsNumberAndBranch: public LControlInstruction<1, 0> {
+ public:
+  explicit LIsNumberAndBranch(LOperand* value) {
+    inputs_[0] = value;
+  }
+
+  LOperand* value() { return inputs_[0]; }
+
+  DECLARE_CONCRETE_INSTRUCTION(IsNumberAndBranch, "is-number-and-branch")
+  DECLARE_HYDROGEN_ACCESSOR(IsNumberAndBranch)
 };
 
 
@@ -988,20 +1007,6 @@ class LCmpT: public LTemplateInstruction<1, 2, 0> {
   DECLARE_HYDROGEN_ACCESSOR(CompareGeneric)
 
   Token::Value op() const { return hydrogen()->token(); }
-};
-
-
-class LIn: public LTemplateInstruction<1, 2, 0> {
- public:
-  LIn(LOperand* key, LOperand* object) {
-    inputs_[0] = key;
-    inputs_[1] = object;
-  }
-
-  LOperand* key() { return inputs_[0]; }
-  LOperand* object() { return inputs_[1]; }
-
-  DECLARE_CONCRETE_INSTRUCTION(In, "in")
 };
 
 
@@ -1160,6 +1165,17 @@ class LConstantD: public LTemplateInstruction<1, 0, 1> {
 };
 
 
+class LConstantE: public LTemplateInstruction<1, 0, 0> {
+ public:
+  DECLARE_CONCRETE_INSTRUCTION(ConstantE, "constant-e")
+  DECLARE_HYDROGEN_ACCESSOR(Constant)
+
+  ExternalReference value() const {
+    return hydrogen()->ExternalReferenceValue();
+  }
+};
+
+
 class LConstantT: public LTemplateInstruction<1, 0, 0> {
  public:
   DECLARE_CONCRETE_INSTRUCTION(ConstantT, "constant-t")
@@ -1190,7 +1206,7 @@ class LDebugBreak: public LTemplateInstruction<0, 0, 0> {
 };
 
 
-class LCmpMapAndBranch: public LTemplateInstruction<0, 1, 0> {
+class LCmpMapAndBranch: public LControlInstruction<1, 0> {
  public:
   explicit LCmpMapAndBranch(LOperand* value) {
     inputs_[0] = value;
@@ -1201,29 +1217,7 @@ class LCmpMapAndBranch: public LTemplateInstruction<0, 1, 0> {
   DECLARE_CONCRETE_INSTRUCTION(CmpMapAndBranch, "cmp-map-and-branch")
   DECLARE_HYDROGEN_ACCESSOR(CompareMap)
 
-  virtual bool IsControl() const { return true; }
-
   Handle<Map> map() const { return hydrogen()->map(); }
-  int true_block_id() const {
-    return hydrogen()->FirstSuccessor()->block_id();
-  }
-  int false_block_id() const {
-    return hydrogen()->SecondSuccessor()->block_id();
-  }
-};
-
-
-class LFixedArrayBaseLength: public LTemplateInstruction<1, 1, 0> {
- public:
-  explicit LFixedArrayBaseLength(LOperand* value) {
-    inputs_[0] = value;
-  }
-
-  LOperand* value() { return inputs_[0]; }
-
-  DECLARE_CONCRETE_INSTRUCTION(FixedArrayBaseLength,
-                               "fixed-array-base-length")
-  DECLARE_HYDROGEN_ACCESSOR(FixedArrayBaseLength)
 };
 
 
@@ -2229,19 +2223,6 @@ class LStringCharFromCode: public LTemplateInstruction<1, 1, 0> {
 };
 
 
-class LStringLength: public LTemplateInstruction<1, 1, 0> {
- public:
-  explicit LStringLength(LOperand* string) {
-    inputs_[0] = string;
-  }
-
-  LOperand* string() { return inputs_[0]; }
-
-  DECLARE_CONCRETE_INSTRUCTION(StringLength, "string-length")
-  DECLARE_HYDROGEN_ACCESSOR(StringLength)
-};
-
-
 class LCheckFunction: public LTemplateInstruction<0, 1, 0> {
  public:
   explicit LCheckFunction(LOperand* value) {
@@ -2359,6 +2340,7 @@ class LCheckNonSmi: public LTemplateInstruction<0, 1, 0> {
   LOperand* value() { return inputs_[0]; }
 
   DECLARE_CONCRETE_INSTRUCTION(CheckNonSmi, "check-non-smi")
+  DECLARE_HYDROGEN_ACCESSOR(CheckHeapObject)
 };
 
 
@@ -2447,42 +2429,12 @@ class LIsConstructCallAndBranch: public LControlInstruction<0, 1> {
 };
 
 
-class LDeleteProperty: public LTemplateInstruction<1, 2, 0> {
- public:
-  LDeleteProperty(LOperand* obj, LOperand* key) {
-    inputs_[0] = obj;
-    inputs_[1] = key;
-  }
-
-  LOperand* object() { return inputs_[0]; }
-  LOperand* key() { return inputs_[1]; }
-
-  DECLARE_CONCRETE_INSTRUCTION(DeleteProperty, "delete-property")
-};
-
-
 class LOsrEntry: public LTemplateInstruction<0, 0, 0> {
  public:
-  LOsrEntry();
+  LOsrEntry() {}
 
   virtual bool HasInterestingComment(LCodeGen* gen) const { return false; }
   DECLARE_CONCRETE_INSTRUCTION(OsrEntry, "osr-entry")
-
-  LOperand** SpilledRegisterArray() { return register_spills_; }
-  LOperand** SpilledDoubleRegisterArray() { return double_register_spills_; }
-
-  void MarkSpilledRegister(int allocation_index, LOperand* spill_operand);
-  void MarkSpilledDoubleRegister(int allocation_index,
-                                 LOperand* spill_operand);
-
- private:
-  // Arrays of spill slot operands for registers with an assigned spill
-  // slot, i.e., that must also be restored to the spill slot on OSR entry.
-  // NULL if the register has no assigned spill slot.  Indexed by allocation
-  // index.
-  LOperand* register_spills_[Register::kMaxNumAllocatableRegisters];
-  LOperand* double_register_spills_[
-      DoubleRegister::kMaxNumAllocatableRegisters];
 };
 
 

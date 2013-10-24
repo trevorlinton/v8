@@ -136,7 +136,7 @@ class FullCodeGenerator: public AstVisitor {
 #error Unsupported target architecture.
 #endif
 
-  static const int kBackEdgeEntrySize = 2 * kIntSize + kOneByteSize;
+  static const int kBackEdgeEntrySize = 3 * kIntSize;
 
  private:
   class Breakable;
@@ -332,7 +332,7 @@ class FullCodeGenerator: public AstVisitor {
 
   // Helper function to split control flow and avoid a branch to the
   // fall-through label if it is set up.
-#ifdef V8_TARGET_ARCH_MIPS
+#if V8_TARGET_ARCH_MIPS
   void Split(Condition cc,
              Register lhs,
              const Operand&  rhs,
@@ -648,7 +648,7 @@ class FullCodeGenerator: public AstVisitor {
   struct BackEdgeEntry {
     BailoutId id;
     unsigned pc;
-    uint8_t loop_depth;
+    uint32_t loop_depth;
   };
 
   struct TypeFeedbackCellEntry {

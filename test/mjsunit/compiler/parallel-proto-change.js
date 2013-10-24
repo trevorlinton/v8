@@ -28,8 +28,9 @@
 // Flags: --allow-natives-syntax
 // Flags: --parallel-recompilation --parallel-recompilation-delay=50
 
-function assertUnoptimized(fun) {
-  assertTrue(%GetOptimizationStatus(fun) != 1);
+if (!%IsParallelRecompilationSupported()) {
+  print("Parallel recompilation is disabled. Skipping this test.");
+  quit();
 }
 
 function f(foo) { return foo.bar(); }
@@ -40,11 +41,14 @@ o.__proto__ = { __proto__: { bar: function() { return 1; } } };
 assertEquals(1, f(o));
 assertEquals(1, f(o));
 
+// Mark for parallel optimization.
 %OptimizeFunctionOnNextCall(f, "parallel");
-assertEquals(1, f(o));     // Trigger optimization.
-assertUnoptimized(f);      // Optimization not yet done.
+// Trigger optimization in the parallel thread.
+assertEquals(1, f(o));
+// While parallel recompilation is running, optimization not yet done.
+assertUnoptimized(f, "no sync");
 // Change the prototype chain during optimization to trigger map invalidation.
 o.__proto__.__proto__ = { bar: function() { return 2; } };
-%CompleteOptimization(f);  // Conclude optimization with...
-assertUnoptimized(f);      // ... bailing out due to map dependency.
+// Optimization eventually bails out due to map dependency.
+assertUnoptimized(f, "sync");
 assertEquals(2, f(o));
