@@ -54,6 +54,7 @@ class StaticVisitorBase : public AllStatic {
   V(FreeSpace)                \
   V(FixedArray)               \
   V(FixedDoubleArray)         \
+  V(ConstantPoolArray)        \
   V(NativeContext)            \
   V(AllocationSite)           \
   V(DataObject2)              \
@@ -141,7 +142,7 @@ class StaticVisitorBase : public AllStatic {
            (base == kVisitJSObject));
     ASSERT(IsAligned(object_size, kPointerSize));
     ASSERT(kMinObjectSizeInWords * kPointerSize <= object_size);
-    ASSERT(object_size < Page::kMaxNonCodeHeapObjectSize);
+    ASSERT(object_size <= Page::kMaxNonCodeHeapObjectSize);
 
     const VisitorId specialization = static_cast<VisitorId>(
         base + (object_size >> kPointerSizeLog2) - kMinObjectSizeInWords);
@@ -416,6 +417,7 @@ class StaticMarkingVisitor : public StaticVisitorBase {
   INLINE(static void VisitMap(Map* map, HeapObject* object));
   INLINE(static void VisitCode(Map* map, HeapObject* object));
   INLINE(static void VisitSharedFunctionInfo(Map* map, HeapObject* object));
+  INLINE(static void VisitConstantPoolArray(Map* map, HeapObject* object));
   INLINE(static void VisitJSFunction(Map* map, HeapObject* object));
   INLINE(static void VisitJSRegExp(Map* map, HeapObject* object));
   INLINE(static void VisitJSArrayBuffer(Map* map, HeapObject* object));

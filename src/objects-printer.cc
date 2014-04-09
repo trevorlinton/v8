@@ -37,9 +37,6 @@ namespace internal {
 
 #ifdef OBJECT_PRINT
 
-static const char* TypeToString(InstanceType type);
-
-
 void MaybeObject::Print() {
   Print(stdout);
 }
@@ -97,6 +94,9 @@ void HeapObject::HeapObjectPrint(FILE* out) {
       break;
     case FIXED_DOUBLE_ARRAY_TYPE:
       FixedDoubleArray::cast(this)->FixedDoubleArrayPrint(out);
+      break;
+    case CONSTANT_POOL_ARRAY_TYPE:
+      ConstantPoolArray::cast(this)->ConstantPoolArrayPrint(out);
       break;
     case FIXED_ARRAY_TYPE:
       FixedArray::cast(this)->FixedArrayPrint(out);
@@ -509,83 +509,12 @@ void JSModule::JSModulePrint(FILE* out) {
 
 static const char* TypeToString(InstanceType type) {
   switch (type) {
-    case INVALID_TYPE: return "INVALID";
-    case MAP_TYPE: return "MAP";
-    case HEAP_NUMBER_TYPE: return "HEAP_NUMBER";
-    case SYMBOL_TYPE: return "SYMBOL";
-    case STRING_TYPE: return "TWO_BYTE_STRING";
-    case ASCII_STRING_TYPE: return "ASCII_STRING";
-    case CONS_STRING_TYPE:
-    case CONS_ASCII_STRING_TYPE:
-      return "CONS_STRING";
-    case EXTERNAL_STRING_TYPE:
-    case EXTERNAL_ASCII_STRING_TYPE:
-    case EXTERNAL_STRING_WITH_ONE_BYTE_DATA_TYPE:
-      return "EXTERNAL_STRING";
-    case SHORT_EXTERNAL_STRING_TYPE:
-    case SHORT_EXTERNAL_ASCII_STRING_TYPE:
-    case SHORT_EXTERNAL_STRING_WITH_ONE_BYTE_DATA_TYPE:
-      return "SHORT_EXTERNAL_STRING";
-    case INTERNALIZED_STRING_TYPE: return "INTERNALIZED_STRING";
-    case ASCII_INTERNALIZED_STRING_TYPE: return "ASCII_INTERNALIZED_STRING";
-    case CONS_INTERNALIZED_STRING_TYPE: return "CONS_INTERNALIZED_STRING";
-    case CONS_ASCII_INTERNALIZED_STRING_TYPE:
-      return "CONS_ASCII_INTERNALIZED_STRING";
-    case EXTERNAL_INTERNALIZED_STRING_TYPE:
-    case EXTERNAL_ASCII_INTERNALIZED_STRING_TYPE:
-    case EXTERNAL_INTERNALIZED_STRING_WITH_ONE_BYTE_DATA_TYPE:
-      return "EXTERNAL_INTERNALIZED_STRING";
-    case SHORT_EXTERNAL_INTERNALIZED_STRING_TYPE:
-    case SHORT_EXTERNAL_ASCII_INTERNALIZED_STRING_TYPE:
-    case SHORT_EXTERNAL_INTERNALIZED_STRING_WITH_ONE_BYTE_DATA_TYPE:
-      return "SHORT_EXTERNAL_INTERNALIZED_STRING";
-    case FIXED_ARRAY_TYPE: return "FIXED_ARRAY";
-    case BYTE_ARRAY_TYPE: return "BYTE_ARRAY";
-    case FREE_SPACE_TYPE: return "FREE_SPACE";
-    case EXTERNAL_PIXEL_ARRAY_TYPE: return "EXTERNAL_PIXEL_ARRAY";
-    case EXTERNAL_BYTE_ARRAY_TYPE: return "EXTERNAL_BYTE_ARRAY";
-    case EXTERNAL_UNSIGNED_BYTE_ARRAY_TYPE:
-      return "EXTERNAL_UNSIGNED_BYTE_ARRAY";
-    case EXTERNAL_SHORT_ARRAY_TYPE: return "EXTERNAL_SHORT_ARRAY";
-    case EXTERNAL_UNSIGNED_SHORT_ARRAY_TYPE:
-      return "EXTERNAL_UNSIGNED_SHORT_ARRAY";
-    case EXTERNAL_INT_ARRAY_TYPE: return "EXTERNAL_INT_ARRAY";
-    case EXTERNAL_UNSIGNED_INT_ARRAY_TYPE:
-      return "EXTERNAL_UNSIGNED_INT_ARRAY";
-    case EXTERNAL_FLOAT_ARRAY_TYPE: return "EXTERNAL_FLOAT_ARRAY";
-    case EXTERNAL_DOUBLE_ARRAY_TYPE: return "EXTERNAL_DOUBLE_ARRAY";
-    case FILLER_TYPE: return "FILLER";
-    case JS_OBJECT_TYPE: return "JS_OBJECT";
-    case JS_CONTEXT_EXTENSION_OBJECT_TYPE: return "JS_CONTEXT_EXTENSION_OBJECT";
-    case ODDBALL_TYPE: return "ODDBALL";
-    case CELL_TYPE: return "CELL";
-    case PROPERTY_CELL_TYPE: return "PROPERTY_CELL";
-    case SHARED_FUNCTION_INFO_TYPE: return "SHARED_FUNCTION_INFO";
-    case JS_GENERATOR_OBJECT_TYPE: return "JS_GENERATOR_OBJECT";
-    case JS_MODULE_TYPE: return "JS_MODULE";
-    case JS_FUNCTION_TYPE: return "JS_FUNCTION";
-    case CODE_TYPE: return "CODE";
-    case JS_ARRAY_TYPE: return "JS_ARRAY";
-    case JS_PROXY_TYPE: return "JS_PROXY";
-    case JS_SET_TYPE: return "JS_SET";
-    case JS_MAP_TYPE: return "JS_MAP";
-    case JS_WEAK_MAP_TYPE: return "JS_WEAK_MAP";
-    case JS_WEAK_SET_TYPE: return "JS_WEAK_SET";
-    case JS_REGEXP_TYPE: return "JS_REGEXP";
-    case JS_VALUE_TYPE: return "JS_VALUE";
-    case JS_GLOBAL_OBJECT_TYPE: return "JS_GLOBAL_OBJECT";
-    case JS_BUILTINS_OBJECT_TYPE: return "JS_BUILTINS_OBJECT";
-    case JS_GLOBAL_PROXY_TYPE: return "JS_GLOBAL_PROXY";
-    case JS_ARRAY_BUFFER_TYPE: return "JS_ARRAY_BUFFER";
-    case JS_TYPED_ARRAY_TYPE: return "JS_TYPED_ARRAY";
-    case JS_DATA_VIEW_TYPE: return "JS_DATA_VIEW";
-    case FOREIGN_TYPE: return "FOREIGN";
-    case JS_MESSAGE_OBJECT_TYPE: return "JS_MESSAGE_OBJECT_TYPE";
-#define MAKE_STRUCT_CASE(NAME, Name, name) case NAME##_TYPE: return #NAME;
-  STRUCT_LIST(MAKE_STRUCT_CASE)
-#undef MAKE_STRUCT_CASE
-    default: return "UNKNOWN";
+#define TYPE_TO_STRING(TYPE) case TYPE: return #TYPE;
+  INSTANCE_TYPE_LIST(TYPE_TO_STRING)
+#undef TYPE_TO_STRING
   }
+  UNREACHABLE();
+  return "UNKNOWN";  // Keep the compiler happy.
 }
 
 
@@ -698,6 +627,23 @@ void FixedDoubleArray::FixedDoubleArrayPrint(FILE* out) {
       PrintF(out, "\n  [%d]: <the hole>", i);
     } else {
       PrintF(out, "\n  [%d]: %g", i, get_scalar(i));
+    }
+  }
+  PrintF(out, "\n");
+}
+
+
+void ConstantPoolArray::ConstantPoolArrayPrint(FILE* out) {
+  HeapObject::PrintHeader(out, "ConstantPoolArray");
+  PrintF(out, " - length: %d", length());
+  for (int i = 0; i < length(); i++) {
+    if (i < first_ptr_index()) {
+      PrintF(out, "\n  [%d]: double: %g", i, get_int64_entry_as_double(i));
+    } else if (i < first_int32_index()) {
+      PrintF(out, "\n  [%d]: pointer: %p", i,
+             reinterpret_cast<void*>(get_ptr_entry(i)));
+    } else {
+      PrintF(out, "\n  [%d]: int32: %d", i, get_int32_entry(i));
     }
   }
   PrintF(out, "\n");
@@ -1059,6 +1005,8 @@ void AccessorPair::AccessorPairPrint(FILE* out) {
   getter()->ShortPrint(out);
   PrintF(out, "\n - setter: ");
   setter()->ShortPrint(out);
+  PrintF(out, "\n - flag: ");
+  access_flags()->ShortPrint(out);
 }
 
 
@@ -1142,6 +1090,8 @@ void ObjectTemplateInfo::ObjectTemplateInfoPrint(FILE* out) {
   tag()->ShortPrint(out);
   PrintF(out, "\n - property_list: ");
   property_list()->ShortPrint(out);
+  PrintF(out, "\n - property_accessors: ");
+  property_accessors()->ShortPrint(out);
   PrintF(out, "\n - constructor: ");
   constructor()->ShortPrint(out);
   PrintF(out, "\n - internal_field_count: ");
@@ -1170,9 +1120,11 @@ void AllocationSite::AllocationSitePrint(FILE* out) {
   HeapObject::PrintHeader(out, "AllocationSite");
   PrintF(out, " - weak_next: ");
   weak_next()->ShortPrint(out);
-  PrintF(out, "\n");
-
-  PrintF(out, " - transition_info: ");
+  PrintF(out, "\n - dependent code: ");
+  dependent_code()->ShortPrint(out);
+  PrintF(out, "\n - nested site: ");
+  nested_site()->ShortPrint(out);
+  PrintF(out, "\n - transition_info: ");
   if (transition_info()->IsCell()) {
     Cell* cell = Cell::cast(transition_info());
     Object* cell_contents = cell->value();

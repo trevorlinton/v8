@@ -252,9 +252,9 @@ void LGapResolver::EmitMove(int index) {
       if (cgen_->IsInteger32(constant_source)) {
         __ mov(dst, Operand(cgen_->ToRepresentation(constant_source, r)));
       } else {
-        __ LoadObject(dst, cgen_->ToHandle(constant_source));
+        __ Move(dst, cgen_->ToHandle(constant_source));
       }
-    } else if (source->IsDoubleRegister()) {
+    } else if (destination->IsDoubleRegister()) {
       DwVfpRegister result = cgen_->ToDoubleRegister(destination);
       double v = cgen_->ToDouble(constant_source);
       __ Vmov(result, v, ip);
@@ -267,7 +267,7 @@ void LGapResolver::EmitMove(int index) {
         __ mov(kSavedValueRegister,
                Operand(cgen_->ToRepresentation(constant_source, r)));
       } else {
-        __ LoadObject(kSavedValueRegister,
+        __ Move(kSavedValueRegister,
                       cgen_->ToHandle(constant_source));
       }
       __ str(kSavedValueRegister, cgen_->ToMemOperand(destination));

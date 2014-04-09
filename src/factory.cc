@@ -79,6 +79,21 @@ Handle<FixedDoubleArray> Factory::NewFixedDoubleArray(int size,
 }
 
 
+Handle<ConstantPoolArray> Factory::NewConstantPoolArray(
+    int number_of_int64_entries,
+    int number_of_ptr_entries,
+    int number_of_int32_entries) {
+  ASSERT(number_of_int64_entries > 0 || number_of_ptr_entries > 0 ||
+         number_of_int32_entries > 0);
+  CALL_HEAP_FUNCTION(
+      isolate(),
+      isolate()->heap()->AllocateConstantPoolArray(number_of_int64_entries,
+                                                   number_of_ptr_entries,
+                                                   number_of_int32_entries),
+      ConstantPoolArray);
+}
+
+
 Handle<NameDictionary> Factory::NewNameDictionary(int at_least_space_for) {
   ASSERT(0 <= at_least_space_for);
   CALL_HEAP_FUNCTION(isolate(),
@@ -126,11 +141,24 @@ Handle<ObjectHashTable> Factory::NewObjectHashTable(int at_least_space_for) {
 }
 
 
+Handle<WeakHashTable> Factory::NewWeakHashTable(int at_least_space_for) {
+  ASSERT(0 <= at_least_space_for);
+  CALL_HEAP_FUNCTION(
+      isolate(),
+      WeakHashTable::Allocate(isolate()->heap(),
+                              at_least_space_for,
+                              WeakHashTable::USE_DEFAULT_MINIMUM_CAPACITY,
+                              TENURED),
+      WeakHashTable);
+}
+
+
 Handle<DescriptorArray> Factory::NewDescriptorArray(int number_of_descriptors,
                                                     int slack) {
   ASSERT(0 <= number_of_descriptors);
   CALL_HEAP_FUNCTION(isolate(),
-                     DescriptorArray::Allocate(number_of_descriptors, slack),
+                     DescriptorArray::Allocate(
+                         isolate(), number_of_descriptors, slack),
                      DescriptorArray);
 }
 
@@ -140,7 +168,8 @@ Handle<DeoptimizationInputData> Factory::NewDeoptimizationInputData(
     PretenureFlag pretenure) {
   ASSERT(deopt_entry_count > 0);
   CALL_HEAP_FUNCTION(isolate(),
-                     DeoptimizationInputData::Allocate(deopt_entry_count,
+                     DeoptimizationInputData::Allocate(isolate(),
+                                                       deopt_entry_count,
                                                        pretenure),
                      DeoptimizationInputData);
 }
@@ -151,7 +180,8 @@ Handle<DeoptimizationOutputData> Factory::NewDeoptimizationOutputData(
     PretenureFlag pretenure) {
   ASSERT(deopt_entry_count > 0);
   CALL_HEAP_FUNCTION(isolate(),
-                     DeoptimizationOutputData::Allocate(deopt_entry_count,
+                     DeoptimizationOutputData::Allocate(isolate(),
+                                                        deopt_entry_count,
                                                         pretenure),
                      DeoptimizationOutputData);
 }
@@ -509,12 +539,19 @@ Handle<Cell> Factory::NewCell(Handle<Object> value) {
 }
 
 
-Handle<PropertyCell> Factory::NewPropertyCell(Handle<Object> value) {
-  AllowDeferredHandleDereference convert_to_cell;
+Handle<PropertyCell> Factory::NewPropertyCellWithHole() {
   CALL_HEAP_FUNCTION(
       isolate(),
-      isolate()->heap()->AllocatePropertyCell(*value),
+      isolate()->heap()->AllocatePropertyCell(),
       PropertyCell);
+}
+
+
+Handle<PropertyCell> Factory::NewPropertyCell(Handle<Object> value) {
+  AllowDeferredHandleDereference convert_to_cell;
+  Handle<PropertyCell> cell = NewPropertyCellWithHole();
+  PropertyCell::SetValueInferType(cell, value);
+  return cell;
 }
 
 
@@ -596,14 +633,23 @@ Handle<FixedArray> Factory::CopyFixedArray(Handle<FixedArray> array) {
 
 
 Handle<FixedArray> Factory::CopySizeFixedArray(Handle<FixedArray> array,
-                                               int new_length) {
-  CALL_HEAP_FUNCTION(isolate(), array->CopySize(new_length), FixedArray);
+                                               int new_length,
+                                               PretenureFlag pretenure) {
+  CALL_HEAP_FUNCTION(isolate(),
+                     array->CopySize(new_length, pretenure),
+                     FixedArray);
 }
 
 
 Handle<FixedDoubleArray> Factory::CopyFixedDoubleArray(
     Handle<FixedDoubleArray> array) {
   CALL_HEAP_FUNCTION(isolate(), array->Copy(), FixedDoubleArray);
+}
+
+
+Handle<ConstantPoolArray> Factory::CopyConstantPoolArray(
+    Handle<ConstantPoolArray> array) {
+  CALL_HEAP_FUNCTION(isolate(), array->Copy(), ConstantPoolArray);
 }
 
 
@@ -665,7 +711,7 @@ Handle<JSFunction> Factory::NewFunctionFromSharedFunctionInfo(
     return result;
   }
 
-  if (V8::UseCrankshaft() &&
+  if (isolate()->use_crankshaft() &&
       FLAG_always_opt &&
       result->is_compiled() &&
       !function_info->is_toplevel() &&
@@ -807,7 +853,7 @@ Handle<String> Factory::EmergencyNewError(const char* message,
       *p++ = ' ';
       space--;
       if (space > 0) {
-        MaybeObject* maybe_arg = args->GetElement(i);
+        MaybeObject* maybe_arg = args->GetElement(isolate(), i);
         Handle<String> arg_str(reinterpret_cast<String*>(maybe_arg));
         const char* arg = *arg_str->ToCString();
         Vector<char> v2(p, static_cast<int>(space));
@@ -970,10 +1016,12 @@ Handle<Code> Factory::NewCode(const CodeDesc& desc,
                               Code::Flags flags,
                               Handle<Object> self_ref,
                               bool immovable,
-                              bool crankshafted) {
+                              bool crankshafted,
+                              int prologue_offset) {
   CALL_HEAP_FUNCTION(isolate(),
                      isolate()->heap()->CreateCode(
-                         desc, flags, self_ref, immovable, crankshafted),
+                         desc, flags, self_ref, immovable, crankshafted,
+                         prologue_offset),
                      Code);
 }
 
@@ -1014,20 +1062,86 @@ Handle<JSModule> Factory::NewJSModule(Handle<Context> context,
 }
 
 
-Handle<GlobalObject> Factory::NewGlobalObject(
-    Handle<JSFunction> constructor) {
-  CALL_HEAP_FUNCTION(isolate(),
-                     isolate()->heap()->AllocateGlobalObject(*constructor),
+// TODO(mstarzinger): Temporary wrapper until handlified.
+static Handle<NameDictionary> NameDictionaryAdd(Handle<NameDictionary> dict,
+                                                Handle<Name> name,
+                                                Handle<Object> value,
+                                                PropertyDetails details) {
+  CALL_HEAP_FUNCTION(dict->GetIsolate(),
+                     dict->Add(*name, *value, details),
+                     NameDictionary);
+}
+
+
+static Handle<GlobalObject> NewGlobalObjectFromMap(Isolate* isolate,
+                                                   Handle<Map> map) {
+  CALL_HEAP_FUNCTION(isolate,
+                     isolate->heap()->Allocate(*map, OLD_POINTER_SPACE),
                      GlobalObject);
 }
 
 
+Handle<GlobalObject> Factory::NewGlobalObject(Handle<JSFunction> constructor) {
+  ASSERT(constructor->has_initial_map());
+  Handle<Map> map(constructor->initial_map());
+  ASSERT(map->is_dictionary_map());
+
+  // Make sure no field properties are described in the initial map.
+  // This guarantees us that normalizing the properties does not
+  // require us to change property values to PropertyCells.
+  ASSERT(map->NextFreePropertyIndex() == 0);
+
+  // Make sure we don't have a ton of pre-allocated slots in the
+  // global objects. They will be unused once we normalize the object.
+  ASSERT(map->unused_property_fields() == 0);
+  ASSERT(map->inobject_properties() == 0);
+
+  // Initial size of the backing store to avoid resize of the storage during
+  // bootstrapping. The size differs between the JS global object ad the
+  // builtins object.
+  int initial_size = map->instance_type() == JS_GLOBAL_OBJECT_TYPE ? 64 : 512;
+
+  // Allocate a dictionary object for backing storage.
+  int at_least_space_for = map->NumberOfOwnDescriptors() * 2 + initial_size;
+  Handle<NameDictionary> dictionary = NewNameDictionary(at_least_space_for);
+
+  // The global object might be created from an object template with accessors.
+  // Fill these accessors into the dictionary.
+  Handle<DescriptorArray> descs(map->instance_descriptors());
+  for (int i = 0; i < map->NumberOfOwnDescriptors(); i++) {
+    PropertyDetails details = descs->GetDetails(i);
+    ASSERT(details.type() == CALLBACKS);  // Only accessors are expected.
+    PropertyDetails d = PropertyDetails(details.attributes(), CALLBACKS, i + 1);
+    Handle<Name> name(descs->GetKey(i));
+    Handle<Object> value(descs->GetCallbacksObject(i), isolate());
+    Handle<PropertyCell> cell = NewPropertyCell(value);
+    NameDictionaryAdd(dictionary, name, cell, d);
+  }
+
+  // Allocate the global object and initialize it with the backing store.
+  Handle<GlobalObject> global = NewGlobalObjectFromMap(isolate(), map);
+  isolate()->heap()->InitializeJSObjectFromMap(*global, *dictionary, *map);
+
+  // Create a new map for the global object.
+  Handle<Map> new_map = Map::CopyDropDescriptors(map);
+  new_map->set_dictionary_map(true);
+
+  // Set up the global object as a normalized object.
+  global->set_map(*new_map);
+  global->set_properties(*dictionary);
+
+  // Make sure result is a global object with properties in dictionary.
+  ASSERT(global->IsGlobalObject() && !global->HasFastProperties());
+  return global;
+}
+
 
 Handle<JSObject> Factory::NewJSObjectFromMap(Handle<Map> map,
-                                             PretenureFlag pretenure) {
+                                             PretenureFlag pretenure,
+                                             bool alloc_props) {
   CALL_HEAP_FUNCTION(
       isolate(),
-      isolate()->heap()->AllocateJSObjectFromMap(*map, pretenure),
+      isolate()->heap()->AllocateJSObjectFromMap(*map, pretenure, alloc_props),
       JSObject);
 }
 
@@ -1077,23 +1191,6 @@ void Factory::SetContent(Handle<JSArray> array,
   CALL_HEAP_FUNCTION_VOID(
       isolate(),
       array->SetContent(*elements));
-}
-
-
-void Factory::EnsureCanContainHeapObjectElements(Handle<JSArray> array) {
-  CALL_HEAP_FUNCTION_VOID(
-      isolate(),
-      array->EnsureCanContainHeapObjectElements());
-}
-
-
-void Factory::EnsureCanContainElements(Handle<JSArray> array,
-                                       Handle<FixedArrayBase> elements,
-                                       uint32_t length,
-                                       EnsureElementsMode mode) {
-  CALL_HEAP_FUNCTION_VOID(
-      isolate(),
-      array->EnsureCanContainElements(*elements, length, mode));
 }
 
 
@@ -1190,13 +1287,6 @@ void Factory::BecomeJSFunction(Handle<JSReceiver> object) {
 }
 
 
-void Factory::SetIdentityHash(Handle<JSObject> object, Smi* hash) {
-  CALL_HEAP_FUNCTION_VOID(
-      isolate(),
-      object->SetIdentityHash(hash, ALLOW_CREATION));
-}
-
-
 Handle<SharedFunctionInfo> Factory::NewSharedFunctionInfo(
     Handle<String> name,
     int number_of_literals,
@@ -1216,6 +1306,7 @@ Handle<SharedFunctionInfo> Factory::NewSharedFunctionInfo(
   shared->set_num_literals(literals_array_size);
   if (is_generator) {
     shared->set_instance_class_name(isolate()->heap()->Generator_string());
+    shared->DisableOptimization(kGenerator);
   }
   return shared;
 }
@@ -1327,7 +1418,7 @@ Handle<JSFunction> Factory::NewFunctionWithoutPrototype(
 
 
 Handle<Object> Factory::ToObject(Handle<Object> object) {
-  CALL_HEAP_FUNCTION(isolate(), object->ToObject(), Object);
+  CALL_HEAP_FUNCTION(isolate(), object->ToObject(isolate()), Object);
 }
 
 
@@ -1392,8 +1483,10 @@ Handle<JSFunction> Factory::CreateApiFunction(
         Smi::cast(instance_template->internal_field_count())->value();
   }
 
+  // TODO(svenpanne) Kill ApiInstanceType and refactor things by generalizing
+  // JSObject::GetHeaderSize.
   int instance_size = kPointerSize * internal_field_count;
-  InstanceType type = INVALID_TYPE;
+  InstanceType type;
   switch (instance_type) {
     case JavaScriptObject:
       type = JS_OBJECT_TYPE;
@@ -1408,9 +1501,10 @@ Handle<JSFunction> Factory::CreateApiFunction(
       instance_size += JSGlobalProxy::kSize;
       break;
     default:
+      UNREACHABLE();
+      type = JS_OBJECT_TYPE;  // Keep the compiler happy.
       break;
   }
-  ASSERT(type != INVALID_TYPE);
 
   Handle<JSFunction> result =
       NewFunction(Factory::empty_string(),
@@ -1463,15 +1557,29 @@ Handle<JSFunction> Factory::CreateApiFunction(
   result->shared()->set_construct_stub(*construct_stub);
   result->shared()->DontAdaptArguments();
 
-  // Recursively copy parent templates' accessors, 'data' may be modified.
+  // Recursively copy parent instance templates' accessors,
+  // 'data' may be modified.
   int max_number_of_additional_properties = 0;
+  int max_number_of_static_properties = 0;
   FunctionTemplateInfo* info = *obj;
   while (true) {
-    Object* props = info->property_accessors();
-    if (!props->IsUndefined()) {
-      Handle<Object> props_handle(props, isolate());
-      NeanderArray props_array(props_handle);
-      max_number_of_additional_properties += props_array.length();
+    if (!info->instance_template()->IsUndefined()) {
+      Object* props =
+          ObjectTemplateInfo::cast(
+              info->instance_template())->property_accessors();
+      if (!props->IsUndefined()) {
+        Handle<Object> props_handle(props, isolate());
+        NeanderArray props_array(props_handle);
+        max_number_of_additional_properties += props_array.length();
+      }
+    }
+    if (!info->property_accessors()->IsUndefined()) {
+      Object* props = info->property_accessors();
+      if (!props->IsUndefined()) {
+        Handle<Object> props_handle(props, isolate());
+        NeanderArray props_array(props_handle);
+        max_number_of_static_properties += props_array.length();
+      }
     }
     Object* parent = info->parent_template();
     if (parent->IsUndefined()) break;
@@ -1480,15 +1588,42 @@ Handle<JSFunction> Factory::CreateApiFunction(
 
   Map::EnsureDescriptorSlack(map, max_number_of_additional_properties);
 
+  // Use a temporary FixedArray to acculumate static accessors
+  int valid_descriptors = 0;
+  Handle<FixedArray> array;
+  if (max_number_of_static_properties > 0) {
+    array = NewFixedArray(max_number_of_static_properties);
+  }
+
   while (true) {
-    Handle<Object> props = Handle<Object>(obj->property_accessors(),
-                                          isolate());
-    if (!props->IsUndefined()) {
-      Map::AppendCallbackDescriptors(map, props);
+    // Install instance descriptors
+    if (!obj->instance_template()->IsUndefined()) {
+      Handle<ObjectTemplateInfo> instance =
+          Handle<ObjectTemplateInfo>(
+              ObjectTemplateInfo::cast(obj->instance_template()), isolate());
+      Handle<Object> props = Handle<Object>(instance->property_accessors(),
+                                            isolate());
+      if (!props->IsUndefined()) {
+        Map::AppendCallbackDescriptors(map, props);
+      }
     }
+    // Accumulate static accessors
+    if (!obj->property_accessors()->IsUndefined()) {
+      Handle<Object> props = Handle<Object>(obj->property_accessors(),
+                                            isolate());
+      valid_descriptors =
+          AccessorInfo::AppendUnique(props, array, valid_descriptors);
+    }
+    // Climb parent chain
     Handle<Object> parent = Handle<Object>(obj->parent_template(), isolate());
     if (parent->IsUndefined()) break;
     obj = Handle<FunctionTemplateInfo>::cast(parent);
+  }
+
+  // Install accumulated static accessors
+  for (int i = 0; i < valid_descriptors; i++) {
+    Handle<AccessorInfo> accessor(AccessorInfo::cast(array->get(i)));
+    JSObject::SetAccessor(result, accessor);
   }
 
   ASSERT(result->shared()->IsApiFunction());
@@ -1589,7 +1724,8 @@ void Factory::ConfigureInstance(Handle<FunctionTemplateInfo> desc,
   // instance template.
   Handle<Object> instance_template(desc->instance_template(), isolate());
   if (!instance_template->IsUndefined()) {
-    Execution::ConfigureInstance(instance,
+    Execution::ConfigureInstance(isolate(),
+                                 instance,
                                  instance_template,
                                  pending_exception);
   } else {

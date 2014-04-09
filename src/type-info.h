@@ -243,9 +243,11 @@ class TypeFeedbackOracle: public ZoneObject {
 
   bool LoadIsMonomorphicNormal(Property* expr);
   bool LoadIsUninitialized(Property* expr);
+  bool LoadIsPreMonomorphic(Property* expr);
   bool LoadIsPolymorphic(Property* expr);
   bool StoreIsUninitialized(TypeFeedbackId ast_id);
   bool StoreIsMonomorphicNormal(TypeFeedbackId ast_id);
+  bool StoreIsPreMonomorphic(TypeFeedbackId ast_id);
   bool StoreIsKeyedPolymorphic(TypeFeedbackId ast_id);
   bool CallIsMonomorphic(Call* expr);
   bool CallNewIsMonomorphic(CallNew* expr);
@@ -297,12 +299,12 @@ class TypeFeedbackOracle: public ZoneObject {
   byte ToBooleanTypes(TypeFeedbackId id);
 
   // Get type information for arithmetic operations and compares.
-  Handle<Type> UnaryType(TypeFeedbackId id);
   void BinaryType(TypeFeedbackId id,
                   Handle<Type>* left,
                   Handle<Type>* right,
                   Handle<Type>* result,
-                  Maybe<int>* fixed_right_arg);
+                  Maybe<int>* fixed_right_arg,
+                  Token::Value operation);
 
   void CompareType(TypeFeedbackId id,
                    Handle<Type>* left,
@@ -311,7 +313,7 @@ class TypeFeedbackOracle: public ZoneObject {
 
   Handle<Type> ClauseType(TypeFeedbackId id);
 
-  TypeInfo IncrementType(CountOperation* expr);
+  Handle<Type> IncrementType(CountOperation* expr);
 
   Zone* zone() const { return zone_; }
   Isolate* isolate() const { return isolate_; }

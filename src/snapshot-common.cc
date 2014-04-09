@@ -137,10 +137,19 @@ bool Snapshot::Initialize(const char* nw_snapshot_file) {
     fclose(fp);
     return true;
   } else if (size_ > 0) {
+    ElapsedTimer timer;
+    if (FLAG_profile_deserialization) {
+      timer.Start();
+    }
     SnapshotByteSource source(raw_data_, raw_size_);
     Deserializer deserializer(&source);
     ReserveSpaceForLinkedInSnapshot(&deserializer);
-    return V8::Initialize(&deserializer);
+    bool success = V8::Initialize(&deserializer);
+    if (FLAG_profile_deserialization) {
+      double ms = timer.Elapsed().InMillisecondsF();
+      PrintF("[Snapshot loading and deserialization took %0.3f ms]\n", ms);
+    }
+    return success;
   }
   return false;
 }
@@ -151,7 +160,7 @@ bool Snapshot::HaveASnapshotToStartFrom() {
 }
 
 
-Handle<Context> Snapshot::NewContextFromSnapshot() {
+Handle<Context> Snapshot::NewContextFromSnapshot(Isolate* isolate) {
   if (context_size_ == 0) {
     return Handle<Context>();
   }
@@ -167,7 +176,7 @@ Handle<Context> Snapshot::NewContextFromSnapshot() {
   deserializer.set_reservation(CELL_SPACE, context_cell_space_used_);
   deserializer.set_reservation(PROPERTY_CELL_SPACE,
                                context_property_cell_space_used_);
-  deserializer.DeserializePartial(&root);
+  deserializer.DeserializePartial(isolate, &root);
   CHECK(root->IsContext());
   return Handle<Context>(Context::cast(root));
 }

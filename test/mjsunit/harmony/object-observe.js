@@ -110,14 +110,16 @@ Object.defineProperty(changeRecordWithAccessor, 'name', {
 
 
 // Object.observe
-assertThrows(function() { Object.observe("non-object", observer.callback); }, TypeError);
+assertThrows(function() { Object.observe("non-object", observer.callback); },
+             TypeError);
 assertThrows(function() { Object.observe(obj, nonFunction); }, TypeError);
 assertThrows(function() { Object.observe(obj, frozenFunction); }, TypeError);
-assertThrows(function() { Object.observe(obj, function() {}, 1); }, TypeError);
-assertThrows(function() { Object.observe(obj, function() {}, [undefined]); }, TypeError);
-assertThrows(function() { Object.observe(obj, function() {}, [1]); }, TypeError);
-assertThrows(function() { Object.observe(obj, function() {}, ['foo', null]); }, TypeError);
-assertEquals(obj, Object.observe(obj, observer.callback, ['foo', 'bar', 'baz']));
+assertEquals(obj, Object.observe(obj, observer.callback, [1]));
+assertEquals(obj, Object.observe(obj, observer.callback, [true]));
+assertEquals(obj, Object.observe(obj, observer.callback, ['foo', null]));
+assertEquals(obj, Object.observe(obj, observer.callback, [undefined]));
+assertEquals(obj, Object.observe(obj, observer.callback,
+             ['foo', 'bar', 'baz']));
 assertEquals(obj, Object.observe(obj, observer.callback, []));
 assertEquals(obj, Object.observe(obj, observer.callback, undefined));
 assertEquals(obj, Object.observe(obj, observer.callback));
@@ -145,13 +147,8 @@ assertThrows(function() { notifier.performChange(1, function(){}); }, TypeError)
 assertThrows(function() { notifier.performChange(undefined, function(){}); }, TypeError);
 assertThrows(function() { notifier.performChange('foo', undefined); }, TypeError);
 assertThrows(function() { notifier.performChange('foo', 'bar'); }, TypeError);
-var testSelf = {};
 notifier.performChange('foo', function() {
-  assertTrue(testSelf === this);
-}, testSelf);
-var self = this;
-notifier.performChange('foo', function() {
-  assertTrue(self === this);
+  assertEquals(undefined, this);
 });
 
 var notify = notifier.notify;
@@ -207,6 +204,25 @@ observer.assertCallbackRecords([
   { object: obj, name: 'bar', type: 'deleted', expando2: 'str' }
 ]);
 
+// Non-string accept values are coerced to strings
+reset();
+Object.observe(obj, observer.callback, [true, 1, null, undefined]);
+notifier = Object.getNotifier(obj);
+notifier.notify({ type: 'true' });
+notifier.notify({ type: 'false' });
+notifier.notify({ type: '1' });
+notifier.notify({ type: '-1' });
+notifier.notify({ type: 'null' });
+notifier.notify({ type: 'nill' });
+notifier.notify({ type: 'undefined' });
+notifier.notify({ type: 'defined' });
+Object.deliverChangeRecords(observer.callback);
+observer.assertCallbackRecords([
+  { object: obj, type: 'true' },
+  { object: obj, type: '1' },
+  { object: obj, type: 'null' },
+  { object: obj, type: 'undefined' }
+]);
 
 // No delivery takes place if no records are pending
 reset();
@@ -259,6 +275,30 @@ records = undefined;
 Object.deliverChangeRecords(observer.callback);
 observer.assertRecordCount(1);
 
+// Get notifier prior to observing
+reset();
+var obj = {};
+Object.getNotifier(obj);
+Object.observe(obj, observer.callback);
+obj.id = 1;
+Object.deliverChangeRecords(observer.callback);
+observer.assertCallbackRecords([
+  { object: obj, type: 'new', name: 'id' },
+]);
+
+// The empty-string property is observable
+reset();
+var obj = {};
+Object.observe(obj, observer.callback);
+obj[''] = '';
+obj[''] = ' ';
+delete obj[''];
+Object.deliverChangeRecords(observer.callback);
+observer.assertCallbackRecords([
+  { object: obj, type: 'new', name: '' },
+  { object: obj, type: 'updated', name: '', oldValue: '' },
+  { object: obj, type: 'deleted', name: '', oldValue: ' ' },
+]);
 
 // Observing a continuous stream of changes, while itermittantly unobserving.
 reset();
@@ -302,7 +342,7 @@ observer.assertCallbackRecords([
 
 // Accept
 reset();
-Object.observe(obj, observer.callback, []);
+Object.observe(obj, observer.callback, ['somethingElse']);
 Object.getNotifier(obj).notify({
   type: 'new'
 });
@@ -390,10 +430,11 @@ Thingy.prototype = {
   increment: function(amount) {
     var notifier = Object.getNotifier(this);
 
+    var self = this;
     notifier.performChange(Thingy.INCREMENT, function() {
-      this.a += amount;
-      this.b += amount;
-    }, this);
+      self.a += amount;
+      self.b += amount;
+    });
 
     notifier.notify({
       object: this,
@@ -405,10 +446,11 @@ Thingy.prototype = {
   multiply: function(amount) {
     var notifier = Object.getNotifier(this);
 
+    var self = this;
     notifier.performChange(Thingy.MULTIPLY, function() {
-      this.a *= amount;
-      this.b *= amount;
-    }, this);
+      self.a *= amount;
+      self.b *= amount;
+    });
 
     notifier.notify({
       object: this,
@@ -420,10 +462,11 @@ Thingy.prototype = {
   incrementAndMultiply: function(incAmount, multAmount) {
     var notifier = Object.getNotifier(this);
 
+    var self = this;
     notifier.performChange(Thingy.INCREMENT_AND_MULTIPLY, function() {
-      this.increment(incAmount);
-      this.multiply(multAmount);
-    }, this);
+      self.increment(incAmount);
+      self.multiply(multAmount);
+    });
 
     notifier.notify({
       object: this,
@@ -495,10 +538,11 @@ RecursiveThingy.prototype = {
     if (!n)
       return;
     var notifier = Object.getNotifier(this);
+    var self = this;
     notifier.performChange(RecursiveThingy.MULTIPLY_FIRST_N, function() {
-      this[n-1] = this[n-1]*amount;
-      this.multiplyFirstN(amount, n-1);
-    }, this);
+      self[n-1] = self[n-1]*amount;
+      self.multiplyFirstN(amount, n-1);
+    });
 
     notifier.notify({
       object: this,
@@ -547,18 +591,19 @@ DeckSuit.prototype = {
 
   shuffle: function() {
     var notifier = Object.getNotifier(this);
+    var self = this;
     notifier.performChange(DeckSuit.SHUFFLE, function() {
-      this.reverse();
-      this.sort(function() { return Math.random()* 2 - 1; });
-      var cut = this.splice(0, 6);
-      Array.prototype.push.apply(this, cut);
-      this.reverse();
-      this.sort(function() { return Math.random()* 2 - 1; });
-      var cut = this.splice(0, 6);
-      Array.prototype.push.apply(this, cut);
-      this.reverse();
-      this.sort(function() { return Math.random()* 2 - 1; });
-    }, this);
+      self.reverse();
+      self.sort(function() { return Math.random()* 2 - 1; });
+      var cut = self.splice(0, 6);
+      Array.prototype.push.apply(self, cut);
+      self.reverse();
+      self.sort(function() { return Math.random()* 2 - 1; });
+      var cut = self.splice(0, 6);
+      Array.prototype.push.apply(self, cut);
+      self.reverse();
+      self.sort(function() { return Math.random()* 2 - 1; });
+    });
 
     notifier.notify({
       object: this,
@@ -637,8 +682,7 @@ Object.observe(obj1, recursiveObserver2);
 Object.observe(obj2, recursiveObserver2);
 ++obj1.a;
 Object.deliverChangeRecords(recursiveObserver2);
-// TODO(verwaest): Disabled because of bug 2774.
-// assertEquals(199, recordCount);
+assertEquals(199, recordCount);
 
 
 // Observing named properties.
@@ -783,6 +827,8 @@ observer.assertNotCalled();
 // Test all kinds of objects generically.
 function TestObserveConfigurable(obj, prop) {
   reset();
+  Object.observe(obj, observer.callback);
+  Object.unobserve(obj, observer.callback);
   obj[prop] = 1;
   Object.observe(obj, observer.callback);
   obj[prop] = 2;
@@ -852,6 +898,8 @@ function TestObserveConfigurable(obj, prop) {
 
 function TestObserveNonConfigurable(obj, prop, desc) {
   reset();
+  Object.observe(obj, observer.callback);
+  Object.unobserve(obj, observer.callback);
   obj[prop] = 1;
   Object.observe(obj, observer.callback);
   obj[prop] = 4;
@@ -1218,6 +1266,75 @@ observer.assertCallbackRecords([
   { object: array, name: '2', type: 'updated', oldValue: 1 },
   { object: array, name: '1', type: 'updated', oldValue: 3 },
   { object: array, name: '0', type: 'updated', oldValue: 2 },
+]);
+
+// Splice emitted after Array mutation methods
+function MockArray(initial, observer) {
+  for (var i = 0; i < initial.length; i++)
+    this[i] = initial[i];
+
+  this.length_ = initial.length;
+  this.observer = observer;
+}
+MockArray.prototype = {
+  set length(length) {
+    Object.getNotifier(this).notify({ type: 'lengthChange' });
+    this.length_ = length;
+    Object.observe(this, this.observer.callback, ['splice']);
+  },
+  get length() {
+    return this.length_;
+  }
+}
+
+reset();
+var array = new MockArray([], observer);
+Object.observe(array, observer.callback, ['lengthChange']);
+Array.prototype.push.call(array, 1);
+Object.deliverChangeRecords(observer.callback);
+observer.assertCallbackRecords([
+  { object: array, type: 'lengthChange' },
+  { object: array, type: 'splice', index: 0, removed: [], addedCount: 1 },
+]);
+
+reset();
+var array = new MockArray([1], observer);
+Object.observe(array, observer.callback, ['lengthChange']);
+Array.prototype.pop.call(array);
+Object.deliverChangeRecords(observer.callback);
+observer.assertCallbackRecords([
+  { object: array, type: 'lengthChange' },
+  { object: array, type: 'splice', index: 0, removed: [1], addedCount: 0 },
+]);
+
+reset();
+var array = new MockArray([1], observer);
+Object.observe(array, observer.callback, ['lengthChange']);
+Array.prototype.shift.call(array);
+Object.deliverChangeRecords(observer.callback);
+observer.assertCallbackRecords([
+  { object: array, type: 'lengthChange' },
+  { object: array, type: 'splice', index: 0, removed: [1], addedCount: 0 },
+]);
+
+reset();
+var array = new MockArray([], observer);
+Object.observe(array, observer.callback, ['lengthChange']);
+Array.prototype.unshift.call(array, 1);
+Object.deliverChangeRecords(observer.callback);
+observer.assertCallbackRecords([
+  { object: array, type: 'lengthChange' },
+  { object: array, type: 'splice', index: 0, removed: [], addedCount: 1 },
+]);
+
+reset();
+var array = new MockArray([0, 1, 2], observer);
+Object.observe(array, observer.callback, ['lengthChange']);
+Array.prototype.splice.call(array, 1, 1);
+Object.deliverChangeRecords(observer.callback);
+observer.assertCallbackRecords([
+  { object: array, type: 'lengthChange' },
+  { object: array, type: 'splice', index: 1, removed: [1], addedCount: 0 },
 ]);
 
 //

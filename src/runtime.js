@@ -294,20 +294,6 @@ function BIT_XOR(y) {
 }
 
 
-// ECMA-262, section 11.4.7, page 47.
-function UNARY_MINUS() {
-  var x = IS_NUMBER(this) ? this : %NonNumberToNumber(this);
-  return %NumberUnaryMinus(x);
-}
-
-
-// ECMA-262, section 11.4.8, page 48.
-function BIT_NOT() {
-  var x = IS_NUMBER(this) ? this : %NonNumberToNumber(this);
-  return %NumberNot(x);
-}
-
-
 // ECMA-262, section 11.7.1, page 51.
 function SHL(y) {
   var x = IS_NUMBER(this) ? this : %NonNumberToNumber(this);
@@ -540,8 +526,8 @@ function ToNumber(x) {
                                     : %StringToNumber(x);
   }
   if (IS_BOOLEAN(x)) return x ? 1 : 0;
-  if (IS_UNDEFINED(x)) return $NaN;
-  if (IS_SYMBOL(x)) return $NaN;
+  if (IS_UNDEFINED(x)) return NAN;
+  if (IS_SYMBOL(x)) return NAN;
   return (IS_NULL(x)) ? 0 : ToNumber(%DefaultNumber(x));
 }
 
@@ -551,8 +537,8 @@ function NonNumberToNumber(x) {
                                     : %StringToNumber(x);
   }
   if (IS_BOOLEAN(x)) return x ? 1 : 0;
-  if (IS_UNDEFINED(x)) return $NaN;
-  if (IS_SYMBOL(x)) return $NaN;
+  if (IS_UNDEFINED(x)) return NAN;
+  if (IS_SYMBOL(x)) return NAN;
   return (IS_NULL(x)) ? 0 : ToNumber(%DefaultNumber(x));
 }
 
